@@ -81,7 +81,7 @@ Restituisce l'albero leggero delle skill applicabili a una sessione. Include met
 
 ### `skill_read`
 
-Legge il Markdown di una singola skill o sottoskill attiva.
+Legge on-demand il Markdown di una singola skill o sottoskill attiva. Se la skill contiene file di supporto importati, la prima lettura restituisce anche il relativo indice `resources`; passando uno dei percorsi come `resourcePath` si legge soltanto quella risorsa, senza caricare tutto il bundle nel contesto.
 
 ## Flusso consigliato per un agente
 
@@ -167,6 +167,19 @@ Un ID sconosciuto non crea implicitamente una nuova sessione.
 ```
 
 `subskillId` è facoltativo.
+
+Per leggere una risorsa indicata dalla risposta precedente:
+
+```json
+{
+  "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
+  "groupId": "coding",
+  "skillId": "nodejs",
+  "resourcePath": "references/testing.md"
+}
+```
+
+Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restituite in Base64.
 
 ## Creazione del catalogo
 
@@ -291,11 +304,15 @@ Le operazioni di aggiornamento accettano `expectedVersion`; `association.set` ac
     └── <group-id>/
         └── <skill-id>/
             ├── versions/
-            │   └── <version>.md
+            │   └── <version>/
+            │       ├── SKILL.md
+            │       └── resources/
             └── subskills/
                 └── <subskill-id>/
                     └── versions/
-                        └── <version>.md
+                        └── <version>/
+                            ├── SKILL.md
+                            └── resources/
 ```
 
 Le versioni Markdown sono immutabili. Il catalogo punta alla versione attiva, evitando che una lettura osservi contenuti parzialmente aggiornati.

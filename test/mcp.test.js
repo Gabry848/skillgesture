@@ -51,7 +51,13 @@ test('supports session, lightweight tree, and on-demand read over MCP', async (t
     name: 'Always available',
     description: 'A global skill',
     global: true,
-    markdown: '# Secret body\n\nLoaded only by skill_read.',
+    markdown: '# Secret body\n\nRead `references/example.md` when needed.',
+    resources: [{
+      path: 'references/example.md',
+      content: '# Supporting reference\n\nLoaded separately.',
+      encoding: 'utf8',
+      mimeType: 'text/markdown',
+    }],
   });
   const opened = await call(client, 'session.open', { label: 'mcp-agent' });
   const sessionId = opened.session.sessionId;
@@ -65,7 +71,20 @@ test('supports session, lightweight tree, and on-demand read over MCP', async (t
     arguments: { sessionId, groupId: 'general', skillId: 'always' },
   });
   assert.notEqual(readResult.isError, true, JSON.stringify(readResult));
-  assert.match(readResult.structuredContent.markdown, /Loaded only by skill_read/);
+  assert.match(readResult.structuredContent.markdown, /references\/example\.md/);
+  assert.deepEqual(readResult.structuredContent.resources.map((item) => item.path), ['references/example.md']);
+
+  const resourceResult = await client.callTool({
+    name: 'skill_read',
+    arguments: {
+      sessionId,
+      groupId: 'general',
+      skillId: 'always',
+      resourcePath: 'references/example.md',
+    },
+  });
+  assert.notEqual(resourceResult.isError, true, JSON.stringify(resourceResult));
+  assert.match(resourceResult.structuredContent.resource.content, /Loaded separately/);
 });
 
 test('rejects malformed action payloads through the MCP schema', async (t) => {

@@ -71,6 +71,41 @@ function normalizeRef(ref) {
   };
 }
 
+function validateResourcePath(resourcePath) {
+  if (
+    typeof resourcePath !== 'string'
+    || resourcePath.length === 0
+    || resourcePath.length > 240
+    || resourcePath.startsWith('/')
+    || resourcePath.includes('\\')
+    || resourcePath.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    fail('INVALID_INPUT', 'Resource paths must be safe relative POSIX paths');
+  }
+  return resourcePath;
+}
+
+async function writeResources(store, resources, basePath) {
+  if (!Array.isArray(resources)) fail('INVALID_INPUT', 'resources must be an array');
+  const seen = new Set();
+  const stored = [];
+  let totalSize = 0;
+  for (const resource of resources) {
+    requireObject(resource, 'resource');
+    const resourcePath = validateResourcePath(resource.path);
+    if (seen.has(resourcePath)) fail('INVALID_INPUT', `Duplicate resource path: ${resourcePath}`);
+    seen.add(resourcePath);
+    const encoding = resource.encoding ?? 'utf8';
+    const mimeType = optionalText(resource.mimeType ?? 'text/plain', 'mimeType', 120);
+    const storagePath = `${basePath}/resources/${resourcePath}`;
+    const size = await store.writeResource(storagePath, resource.content, encoding);
+    totalSize += size;
+    if (totalSize > 20 * 1024 * 1024) fail('INVALID_INPUT', 'Skill resources cannot exceed 20 MiB in total');
+    stored.push({ path: resourcePath, storagePath, mimeType, encoding, size });
+  }
+  return stored.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export class SkillRegistry {
   constructor(store) {
     this.store = store;
@@ -205,6 +240,7 @@ export class SkillRegistry {
           global: false,
           version: 0,
           markdownPath: '',
+          resources: [],
           subskills: [],
         };
         group.skills.push(skill);
@@ -217,11 +253,13 @@ export class SkillRegistry {
       if (data.enabled !== undefined) skill.enabled = requireBoolean(data.enabled, 'enabled');
       if (data.global !== undefined) skill.global = requireBoolean(data.global, 'global');
       const nextVersion = skill.version + 1;
+      const versionRoot = `skills/${groupId}/${id}/versions/${nextVersion}`;
       if (data.markdown !== undefined || created) {
-        const nextMarkdownPath = `skills/${groupId}/${id}/versions/${nextVersion}.md`;
+        const nextMarkdownPath = `${versionRoot}/SKILL.md`;
         await this.store.writeMarkdown(nextMarkdownPath, data.markdown ?? `# ${skill.name}\n`);
         skill.markdownPath = nextMarkdownPath;
       }
+      if (data.resources !== undefined) skill.resources = await writeResources(this.store, data.resources, versionRoot);
       skill.version = nextVersion;
       group.skills.sort((a, b) => a.name.localeCompare(b.name));
       return { skill: structuredClone(skill), groupId, created };
@@ -247,6 +285,7 @@ export class SkillRegistry {
           enabled: true,
           version: 0,
           markdownPath: '',
+          resources: [],
         };
         skill.subskills.push(subskill);
       }
@@ -257,11 +296,13 @@ export class SkillRegistry {
       if (description !== undefined) subskill.description = description;
       if (data.enabled !== undefined) subskill.enabled = requireBoolean(data.enabled, 'enabled');
       const nextVersion = subskill.version + 1;
+      const versionRoot = `skills/${groupId}/${skillId}/subskills/${id}/versions/${nextVersion}`;
       if (data.markdown !== undefined || created) {
-        const nextMarkdownPath = `skills/${groupId}/${skillId}/subskills/${id}/versions/${nextVersion}.md`;
+        const nextMarkdownPath = `${versionRoot}/SKILL.md`;
         await this.store.writeMarkdown(nextMarkdownPath, data.markdown ?? `# ${subskill.name}\n`);
         subskill.markdownPath = nextMarkdownPath;
       }
+      if (data.resources !== undefined) subskill.resources = await writeResources(this.store, data.resources, versionRoot);
       subskill.version = nextVersion;
       skill.subskills.sort((a, b) => a.name.localeCompare(b.name));
       return { subskill: structuredClone(subskill), groupId, skillId, created };
@@ -346,6 +387,9 @@ export class SkillRegistry {
 
   async read(sessionId, rawRef) {
     const ref = normalizeRef(rawRef);
+    const requestedResourcePath = rawRef.resourcePath === undefined
+      ? undefined
+      : validateResourcePath(rawRef.resourcePath);
     const [session, catalog, associations] = await Promise.all([
       this.store.readSession(sessionId),
       this.store.readCatalog(),
@@ -363,8 +407,7 @@ export class SkillRegistry {
       kind = 'subskill';
       if (!node.enabled) fail('SKILL_NOT_ACTIVE', `Subskill ${ref.subskillId} is disabled`);
     }
-    const markdown = await this.store.readMarkdown(node.markdownPath);
-    return {
+    const common = {
       sessionId,
       catalogRevision: catalog.revision,
       kind,
@@ -373,7 +416,27 @@ export class SkillRegistry {
       description: node.description,
       scope: skill.global ? 'global' : 'folder',
       matchedFolders,
+    };
+    if (requestedResourcePath !== undefined) {
+      const resource = node.resources.find((candidate) => candidate.path === requestedResourcePath);
+      if (!resource) fail('RESOURCE_NOT_FOUND', `Resource ${requestedResourcePath} is not bundled with this skill`);
+      const buffer = await this.store.readResource(resource.storagePath);
+      return {
+        ...common,
+        resource: {
+          path: resource.path,
+          mimeType: resource.mimeType,
+          encoding: resource.encoding,
+          size: resource.size,
+          content: buffer.toString(resource.encoding),
+        },
+      };
+    }
+    const markdown = await this.store.readMarkdown(node.markdownPath);
+    return {
+      ...common,
       markdown,
+      resources: node.resources.map(({ path, mimeType, encoding, size }) => ({ path, mimeType, encoding, size })),
     };
   }
 

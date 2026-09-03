@@ -156,6 +156,44 @@ export class JsonStore {
     return readFile(filePath, 'utf8');
   }
 
+  async writeResource(relativePath, content, encoding = 'utf8') {
+    if (!['utf8', 'base64'].includes(encoding) || typeof content !== 'string') {
+      fail('INVALID_INPUT', 'Resource content must be utf8 or base64 text');
+    }
+    const buffer = Buffer.from(content, encoding);
+    if (buffer.byteLength > 5 * 1024 * 1024) fail('INVALID_INPUT', 'A resource cannot exceed 5 MiB');
+    const filePath = this.resolveSkillPath(relativePath);
+    const directory = path.dirname(filePath);
+    await this.#assertSafeSkillParents(directory);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await this.#assertSafeSkillParents(directory);
+    const temporaryPath = path.join(directory, `.RESOURCE.${randomUUID()}.tmp`);
+    let handle;
+    try {
+      handle = await open(temporaryPath, 'wx', 0o600);
+      await handle.writeFile(buffer);
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await rename(temporaryPath, filePath);
+      await this.#syncDirectory(directory);
+      return buffer.byteLength;
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      await rm(temporaryPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  async readResource(relativePath) {
+    const filePath = this.resolveSkillPath(relativePath);
+    await this.#assertSafeSkillParents(path.dirname(filePath));
+    const fileStat = await lstat(filePath);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) fail('STORE_CORRUPT', 'Registered resource is not a regular file');
+    if (fileStat.size > 5 * 1024 * 1024) fail('STORE_CORRUPT', 'Registered resource exceeds 5 MiB');
+    return readFile(filePath);
+  }
+
   resolveSkillPath(relativePath) {
     if (typeof relativePath !== 'string' || path.isAbsolute(relativePath)) {
       fail('STORE_CORRUPT', 'Skill content path must be relative');
