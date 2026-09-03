@@ -1,0 +1,20 @@
+{
+  "name": "skillgesture",
+  "version": "1.0.0",
+  "description": "A Node.js project for skillgesture.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gabry848/skillgesture.git"
+  },
+  "keywords": [],
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Gabry848/skillgesture/issues"
+  },
+  "homepage": "https://github.com/Gabry848/skillgesture#readme",
+  "license": "ISC"
+}
