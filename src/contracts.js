@@ -10,6 +10,14 @@ const NameSchema = z.string().trim().min(1).max(120);
 const DescriptionSchema = z.string().trim().max(1000);
 const FolderSchema = z.string().min(1);
 
+const StoredResourceSchema = z.strictObject({
+  path: z.string().min(1),
+  storagePath: z.string().min(1),
+  mimeType: z.string().min(1),
+  encoding: z.enum(['utf8', 'base64']),
+  size: VersionSchema,
+});
+
 const SubskillSchema = z.strictObject({
   id: IdSchema,
   name: NameSchema,
@@ -17,6 +25,7 @@ const SubskillSchema = z.strictObject({
   enabled: z.boolean(),
   version: VersionSchema,
   markdownPath: z.string().min(1),
+  resources: z.array(StoredResourceSchema).default([]),
 });
 
 const SkillSchema = z.strictObject({
@@ -27,6 +36,7 @@ const SkillSchema = z.strictObject({
   global: z.boolean(),
   version: VersionSchema,
   markdownPath: z.string().min(1),
+  resources: z.array(StoredResourceSchema).default([]),
   subskills: z.array(SubskillSchema),
 });
 
@@ -77,6 +87,14 @@ export const ReadInputSchema = z.strictObject({
   groupId: IdSchema,
   skillId: IdSchema,
   subskillId: IdSchema.optional(),
+  resourcePath: z.string().min(1).optional().describe('Optional bundled resource path returned by an earlier skill_read call'),
+});
+
+const InputResourceSchema = z.strictObject({
+  path: z.string().min(1).max(240),
+  content: z.string().max(8 * 1024 * 1024),
+  encoding: z.enum(['utf8', 'base64']).optional().default('utf8'),
+  mimeType: z.string().min(1).max(120).optional().default('text/plain'),
 });
 
 export const ManageInputSchema = z.discriminatedUnion('action', [
@@ -117,6 +135,7 @@ export const ManageInputSchema = z.discriminatedUnion('action', [
       name: NameSchema.optional(),
       description: DescriptionSchema.optional(),
       markdown: z.string().max(256 * 1024).optional(),
+      resources: z.array(InputResourceSchema).max(200).optional(),
       global: z.boolean().optional(),
       enabled: z.boolean().optional(),
       expectedVersion: OptionalVersion,
@@ -131,6 +150,7 @@ export const ManageInputSchema = z.discriminatedUnion('action', [
       name: NameSchema.optional(),
       description: DescriptionSchema.optional(),
       markdown: z.string().max(256 * 1024).optional(),
+      resources: z.array(InputResourceSchema).max(200).optional(),
       enabled: z.boolean().optional(),
       expectedVersion: OptionalVersion,
     }),

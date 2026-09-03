@@ -39,14 +39,15 @@ export function createMcpServer(registry) {
     'skill_read',
     {
       title: 'Read one active skill',
-      description: 'Load one Markdown skill body on demand. The skill must be enabled and active for the session.',
+      description: 'Load one Markdown skill body or one bundled supporting resource on demand. The skill must be enabled and active for the session.',
       inputSchema: ReadInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ sessionId, groupId, skillId, subskillId }) => registry.read(sessionId, {
+    toolHandler(({ sessionId, groupId, skillId, subskillId, resourcePath }) => registry.read(sessionId, {
       groupId,
       skillId,
       ...(subskillId === undefined ? {} : { subskillId }),
+      ...(resourcePath === undefined ? {} : { resourcePath }),
     })),
   );
 
