@@ -1,70 +1,70 @@
 # Skillgesture
 
-Skillgesture è un server MCP locale per organizzare e fornire skill agli agenti AI. Le skill sono conservate in un archivio centrale, classificate come **gruppo → skill → sottoskill** e caricate integralmente solo quando l'agente le richiede.
+Skillgesture is a local MCP server for organizing and providing skills to AI agents. Skills are stored in a central repository, organized as **group → skill → subskill**, and loaded in full only when an agent requests them.
 
-## Funzionalità MVP
+## MVP Features
 
-- archivio centrale in `~/.skillgesture`;
-- contenuti delle skill in Markdown;
-- catalogo, associazioni e sessioni persistenti in JSON;
-- skill globali o associate a percorsi esatti;
-- caricamento contemporaneo di più cartelle;
-- indice leggero senza contenuti Markdown;
-- lettura on-demand;
-- creazione e modifica di gruppi, skill e sottoskill;
-- abilitazione e disabilitazione dei nodi;
-- sessioni durevoli e indipendenti per più agenti;
-- scritture atomiche e lock condiviso tra processi.
+- central repository in `~/.skillgesture`;
+- skill content stored as Markdown;
+- catalog, associations, and sessions persisted as JSON;
+- global skills or skills associated with exact paths;
+- simultaneous loading of multiple folders;
+- lightweight index without Markdown content;
+- on-demand reading;
+- creation and modification of groups, skills, and subskills;
+- enabling and disabling nodes;
+- durable, independent sessions for multiple agents;
+- atomic writes and a shared cross-process lock.
 
-## Requisiti
+## Requirements
 
-- Node.js 24 o successivo
-- npm 12 o successivo
+- Node.js 24 or later
+- npm 12 or later
 
-## Installazione
+## Installation
 
 ```bash
 npm install
 ```
 
-Per rendere disponibile il comando `skillgesture` globalmente durante lo sviluppo:
+To make the `skillgesture` command globally available during development:
 
 ```bash
 npm link
 ```
 
-## Avvio
+## Running
 
 ```bash
 npm start
 ```
 
-Il server usa il trasporto MCP `stdio`. I messaggi diagnostici vengono scritti su `stderr`, mentre `stdout` è riservato al protocollo MCP.
+The server uses the MCP `stdio` transport. Diagnostic messages are written to `stderr`, while `stdout` is reserved for the MCP protocol.
 
-Esempio di configurazione di un client MCP:
+Example MCP client configuration:
 
 ```json
 {
   "mcpServers": {
     "skillgesture": {
       "command": "node",
-      "args": ["/percorso/assoluto/skillgesture/src/index.js"]
+      "args": ["/absolute/path/to/skillgesture/src/index.js"]
     }
   }
 }
 ```
 
-Per usare una directory di storage differente:
+To use a different storage directory:
 
 ```bash
-SKILLGESTURE_HOME=/percorso/alternativo npm start
+SKILLGESTURE_HOME=/alternative/path npm start
 ```
 
-## I tre tool MCP
+## The Three MCP Tools
 
 ### `skill_manage`
 
-Gestisce sessioni, catalogo e associazioni. Le azioni disponibili sono:
+Manages sessions, the catalog, and associations. The available actions are:
 
 - `session.open`
 - `session.configure`
@@ -77,17 +77,17 @@ Gestisce sessioni, catalogo e associazioni. Le azioni disponibili sono:
 
 ### `skill_tree`
 
-Restituisce l'albero leggero delle skill applicabili a una sessione. Include metadati e provenienza, ma non il contenuto Markdown.
+Returns the lightweight tree of skills applicable to a session. It includes metadata and provenance, but not Markdown content.
 
 ### `skill_read`
 
-Legge on-demand il Markdown di una singola skill o sottoskill attiva. Se la skill contiene file di supporto importati, la prima lettura restituisce anche il relativo indice `resources`; passando uno dei percorsi come `resourcePath` si legge soltanto quella risorsa, senza caricare tutto il bundle nel contesto.
+Reads the Markdown of a single active skill or subskill on demand. If the skill contains imported supporting files, the first read also returns their `resources` index. Passing one of those paths as `resourcePath` reads only that resource without loading the entire bundle into the context.
 
-## Flusso consigliato per un agente
+## Recommended Agent Workflow
 
-### 1. Creare una sessione
+### 1. Create a Session
 
-Ogni agente crea una sessione una sola volta:
+Each agent creates a session once:
 
 ```json
 {
@@ -102,7 +102,7 @@ Ogni agente crea una sessione una sola volta:
 }
 ```
 
-La risposta contiene un UUID:
+The response contains a UUID:
 
 ```json
 {
@@ -114,11 +114,11 @@ La risposta contiene un UUID:
 }
 ```
 
-L'agente deve conservare e riutilizzare questo `sessionId`.
+The agent must retain and reuse this `sessionId`.
 
-### 2. Riprendere una sessione
+### 2. Resume a Session
 
-Dopo un riavvio del server:
+After restarting the server:
 
 ```json
 {
@@ -129,9 +129,9 @@ Dopo un riavvio del server:
 }
 ```
 
-Un ID sconosciuto non crea implicitamente una nuova sessione.
+An unknown ID does not implicitly create a new session.
 
-### 3. Modificare le cartelle della sessione
+### 3. Update the Session Folders
 
 ```json
 {
@@ -144,9 +144,9 @@ Un ID sconosciuto non crea implicitamente una nuova sessione.
 }
 ```
 
-`mode` può essere `replace`, `add` o `remove`.
+`mode` can be `replace`, `add`, or `remove`.
 
-### 4. Consultare l'indice
+### 4. View the Index
 
 ```json
 {
@@ -155,7 +155,7 @@ Un ID sconosciuto non crea implicitamente una nuova sessione.
 }
 ```
 
-### 5. Leggere una skill on-demand
+### 5. Read a Skill on Demand
 
 ```json
 {
@@ -166,9 +166,9 @@ Un ID sconosciuto non crea implicitamente una nuova sessione.
 }
 ```
 
-`subskillId` è facoltativo.
+`subskillId` is optional.
 
-Per leggere una risorsa indicata dalla risposta precedente:
+To read a resource listed in the previous response:
 
 ```json
 {
@@ -179,11 +179,11 @@ Per leggere una risorsa indicata dalla risposta precedente:
 }
 ```
 
-Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restituite in Base64.
+Text resources are returned as UTF-8; binary resources are returned as Base64.
 
-## Creazione del catalogo
+## Creating the Catalog
 
-### Gruppo
+### Group
 
 ```json
 {
@@ -191,12 +191,12 @@ Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restit
   "data": {
     "id": "coding",
     "name": "Coding",
-    "description": "Skill di sviluppo"
+    "description": "Development skills"
   }
 }
 ```
 
-### Skill globale
+### Global Skill
 
 ```json
 {
@@ -205,14 +205,14 @@ Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restit
     "groupId": "coding",
     "id": "git",
     "name": "Git",
-    "description": "Gestione del versionamento",
+    "description": "Version control management",
     "global": true,
-    "markdown": "# Git\n\nIstruzioni della skill."
+    "markdown": "# Git\n\nSkill instructions."
   }
 }
 ```
 
-### Skill associabile a cartelle
+### Folder-Scoped Skill
 
 ```json
 {
@@ -222,12 +222,12 @@ Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restit
     "id": "nodejs",
     "name": "Node.js",
     "global": false,
-    "markdown": "# Node.js\n\nIstruzioni della skill."
+    "markdown": "# Node.js\n\nSkill instructions."
   }
 }
 ```
 
-### Sottoskill
+### Subskill
 
 ```json
 {
@@ -237,14 +237,14 @@ Le risorse testuali vengono restituite come UTF-8; quelle binarie vengono restit
     "skillId": "nodejs",
     "id": "testing",
     "name": "Node testing",
-    "markdown": "# Node testing\n\nUsare node:test."
+    "markdown": "# Node testing\n\nUse node:test."
   }
 }
 ```
 
-Le sottoskill ereditano lo scope della skill genitore.
+Subskills inherit the scope of their parent skill.
 
-## Associazione a una cartella
+## Associating a Skill with a Folder
 
 ```json
 {
@@ -261,15 +261,15 @@ Le sottoskill ereditano lo scope della skill genitore.
 }
 ```
 
-`association.set` sostituisce l'intero insieme di skill della cartella. Un array vuoto elimina l'associazione.
+`association.set` replaces the folder's entire set of skills. An empty array removes the association.
 
-Le associazioni sono basate sul percorso canonico esatto:
+Associations are based on the exact canonical path:
 
-- un'associazione a `/projects/api` non si applica automaticamente a `/projects/api/packages/web`;
-- le cartelle devono esistere quando vengono caricate o associate;
-- una sessione può contenere più cartelle e riceve l'unione deduplicata delle relative skill.
+- an association with `/projects/api` does not automatically apply to `/projects/api/packages/web`;
+- folders must exist when they are loaded or associated;
+- a session can contain multiple folders and receives the deduplicated union of their skills.
 
-## Abilitazione e disabilitazione
+## Enabling and Disabling Nodes
 
 ```json
 {
@@ -284,15 +284,15 @@ Le associazioni sono basate sul percorso canonico esatto:
 }
 ```
 
-Disabilitare un gruppo disabilita tutte le skill discendenti. Disabilitare una skill rende non leggibili anche le sue sottoskill. `skill_tree` può mostrare i nodi disabilitati usando `includeDisabled: true`.
+Disabling a group disables all its descendant skills. Disabling a skill also makes its subskills unreadable. `skill_tree` can show disabled nodes when called with `includeDisabled: true`.
 
-## Concorrenza e versioni
+## Concurrency and Versions
 
-Più processi MCP possono utilizzare lo stesso archivio. Le sessioni sono salvate separatamente e le mutazioni sono serializzate tramite lock inter-processo.
+Multiple MCP processes can use the same repository. Sessions are stored separately, and mutations are serialized through a cross-process lock.
 
-Le operazioni di aggiornamento accettano `expectedVersion`; `association.set` accetta `expectedRevision`. Se un altro agente ha già modificato il dato, Skillgesture restituisce `VERSION_CONFLICT` invece di sovrascrivere silenziosamente la modifica.
+Update operations accept `expectedVersion`; `association.set` accepts `expectedRevision`. If another agent has already changed the data, Skillgesture returns `VERSION_CONFLICT` instead of silently overwriting the change.
 
-## Archivio centrale
+## Central Repository
 
 ```text
 ~/.skillgesture/
@@ -315,16 +315,16 @@ Le operazioni di aggiornamento accettano `expectedVersion`; `association.set` ac
                             └── resources/
 ```
 
-Le versioni Markdown sono immutabili. Il catalogo punta alla versione attiva, evitando che una lettura osservi contenuti parzialmente aggiornati.
+Markdown versions are immutable. The catalog points to the active version, preventing reads from observing partially updated content.
 
-## Test
+## Tests
 
 ```bash
 npm test
 ```
 
-I test usano directory temporanee e non modificano `~/.skillgesture`.
+Tests use temporary directories and do not modify `~/.skillgesture`.
 
-## Licenza
+## License
 
 ISC
