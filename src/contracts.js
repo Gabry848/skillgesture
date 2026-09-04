@@ -97,6 +97,21 @@ const InputResourceSchema = z.strictObject({
   mimeType: z.string().min(1).max(120).optional().default('text/plain'),
 });
 
+export const ManageToolInputSchema = z.strictObject({
+  action: z.enum([
+    'session.open',
+    'session.configure',
+    'session.list',
+    'group.upsert',
+    'skill.upsert',
+    'subskill.upsert',
+    'node.setEnabled',
+    'association.set',
+  ]).describe('Management action to perform'),
+  data: z.record(z.string(), z.unknown()).optional().default({})
+    .describe('Action-specific payload; see the tool description or Skillgesture README'),
+});
+
 export const ManageInputSchema = z.discriminatedUnion('action', [
   z.strictObject({
     action: z.literal('session.open'),

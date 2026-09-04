@@ -1,5 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { LooseOutputSchema, ManageInputSchema, ReadInputSchema, TreeInputSchema } from './contracts.js';
+import {
+  LooseOutputSchema,
+  ManageInputSchema,
+  ManageToolInputSchema,
+  ReadInputSchema,
+  TreeInputSchema,
+} from './contracts.js';
 import { errorPayload } from './errors.js';
 
 function response(payload, isError = false) {
@@ -60,10 +66,13 @@ export function createMcpServer(registry) {
         'Actions: session.open, session.configure, session.list, group.upsert, skill.upsert, subskill.upsert, node.setEnabled, association.set.',
         'Use session.open without sessionId once, persist its returned UUID, then reuse it in skill_tree and skill_read. Folder associations use exact canonical paths.',
       ].join(' '),
-      inputSchema: ManageInputSchema,
+      inputSchema: ManageToolInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ action, data }) => registry.manage(action, data)),
+    toolHandler((input) => {
+      const { action, data } = ManageInputSchema.parse(input);
+      return registry.manage(action, data);
+    }),
   );
 
   return server;
