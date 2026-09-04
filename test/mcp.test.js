@@ -40,6 +40,10 @@ test('advertises exactly three tools with input and output schemas', async (t) =
     assert.equal(tool.inputSchema.type, 'object');
     assert.equal(tool.outputSchema.type, 'object');
   }
+  const manage = listed.tools.find((tool) => tool.name === 'skill_manage');
+  assert.deepEqual(manage.inputSchema.required, ['action']);
+  assert.ok(manage.inputSchema.properties.action);
+  assert.ok(manage.inputSchema.properties.data);
 });
 
 test('supports session, lightweight tree, and on-demand read over MCP', async (t) => {
