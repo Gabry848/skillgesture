@@ -324,6 +324,22 @@ npm run benchmark -- --sizes=10,100
 
 Tests and benchmarks use temporary directories and do not modify `~/.skillgesture`.
 
+### Benchmark commands
+
+Run the deterministic benchmark across 10, 100, 1,000, and 10,000 generated skills:
+
+```bash
+npm run bench
+```
+
+For a quick 10/100-skill smoke run:
+
+```bash
+npm run bench -- --smoke
+```
+
+The benchmark reports serialized bytes, estimated tokens, compact-versus-legacy reduction, discovery/search/read latency, and individual-versus-batch call counts. Latency measurements are informational and are not used as flaky CI assertions.
+
 ## License
 
 ISC

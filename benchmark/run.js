@@ -10,10 +10,11 @@ import { JsonStore } from '../src/store.js';
 import { benchmarkSkillId, generateBenchmarkStore } from './generate.js';
 
 const DEFAULT_SIZES = [10, 100, 1_000, 10_000];
+const SMOKE_SIZES = [10, 100];
 
 function sizesFromArguments(arguments_) {
   const option = arguments_.find((argument) => argument.startsWith('--sizes='));
-  if (!option) return DEFAULT_SIZES;
+  if (!option) return arguments_.includes('--smoke') ? SMOKE_SIZES : DEFAULT_SIZES;
   const sizes = option.slice('--sizes='.length).split(',').map(Number);
   if (sizes.length === 0 || sizes.some((size) => !Number.isInteger(size) || size < 1)) {
     throw new TypeError('--sizes must be a comma-separated list of positive integers');
@@ -34,6 +35,16 @@ function payload(value) {
 
 function rounded(milliseconds) {
   return Math.round(milliseconds * 1_000) / 1_000;
+}
+
+function reduction(legacy, compact) {
+  const bytes = legacy.bytes - compact.bytes;
+  const estimatedTokens = legacy.estimatedTokens - compact.estimatedTokens;
+  return {
+    bytes,
+    estimatedTokens,
+    percent: Math.round((bytes / legacy.bytes) * 100_000) / 1_000,
+  };
 }
 
 function requireToolSuccess(result) {
@@ -109,12 +120,15 @@ async function benchmarkSize(base, size) {
   const ref = { groupId: 'benchmark', skillId: benchmarkSkillId(0, size) };
   const readCold = await timed(() => readRegistry.read(undefined, ref));
   const readWarm = await timed(() => readRegistry.read(undefined, ref));
+  const legacyPayload = payload(legacy);
+  const compactPayload = payload(discoveryWarm.value);
 
   return {
     skills: size,
     payload: {
-      legacy: payload(legacy),
-      compact: payload(discoveryWarm.value),
+      legacy: legacyPayload,
+      compact: compactPayload,
+      compactVsLegacyReduction: reduction(legacyPayload, compactPayload),
       search: payload(searchWarm.value),
       notModified: payload(notModified),
     },
