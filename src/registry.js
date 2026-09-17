@@ -572,7 +572,8 @@ export class SkillRegistry {
     if (globalOnly && !skill.global) {
       fail('SESSION_REQUIRED', `Skill ${ref.groupId}/${ref.skillId} requires a session`);
     }
-    const matchedFolders = this.#matchedFolders(associations, session, ref.groupId, ref.skillId);
+    const associationIndex = this.#indexAssociations(associations, session);
+    const matchedFolders = associationIndex.get(skillKey(ref.groupId, ref.skillId)) ?? [];
     const active = group.enabled && skill.enabled && (skill.global || matchedFolders.length > 0);
     if (!active) fail('SKILL_NOT_ACTIVE', `Skill ${ref.groupId}/${ref.skillId} is not active in this session`);
 
@@ -647,10 +648,11 @@ export class SkillRegistry {
 
   #project(catalog, associations, session, includeDisabled) {
     const groups = [];
+    const associationIndex = this.#indexAssociations(associations, session);
     for (const group of catalog.groups) {
       const skills = [];
       for (const skill of group.skills) {
-        const matchedFolders = this.#matchedFolders(associations, session, group.id, skill.id);
+        const matchedFolders = associationIndex.get(skillKey(group.id, skill.id)) ?? [];
         const applicable = skill.global || matchedFolders.length > 0;
         if (!applicable) continue;
         const active = group.enabled && skill.enabled;
@@ -690,9 +692,16 @@ export class SkillRegistry {
     return groups;
   }
 
-  #matchedFolders(associations, session, groupId, skillId) {
-    const key = skillKey(groupId, skillId);
-    return session.folders.filter((folder) => associations.folders[folder]?.includes(key));
+  #indexAssociations(associations, session) {
+    const index = new Map();
+    for (const folder of session.folders) {
+      for (const key of associations.folders[folder] ?? []) {
+        const matched = index.get(key);
+        if (matched) matched.push(folder);
+        else index.set(key, [folder]);
+      }
+    }
+    return index;
   }
 
   async #mutateCatalog(mutator) {
