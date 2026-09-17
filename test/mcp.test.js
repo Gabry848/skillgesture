@@ -91,6 +91,32 @@ test('supports session, lightweight tree, and on-demand read over MCP', async (t
   assert.match(resourceResult.structuredContent.resource.content, /Loaded separately/);
 });
 
+test('supports sessionless global discovery and reads over MCP', async (t) => {
+  const client = await connect(t);
+  await call(client, 'group.upsert', { id: 'general', name: 'General' });
+  await call(client, 'skill.upsert', {
+    groupId: 'general', id: 'global', name: 'Global', global: true, markdown: '# Global',
+  });
+  await call(client, 'skill.upsert', {
+    groupId: 'general', id: 'scoped', name: 'Scoped', markdown: '# Scoped',
+  });
+
+  const tree = await client.callTool({ name: 'skill_tree', arguments: {} });
+  assert.notEqual(tree.isError, true, JSON.stringify(tree));
+  assert.deepEqual(tree.structuredContent.context, { scope: 'global-only', session: null });
+  assert.deepEqual(tree.structuredContent.groups[0].skills.map((skill) => skill.id), ['global']);
+
+  const read = await client.callTool({
+    name: 'skill_read', arguments: { groupId: 'general', skillId: 'global' },
+  });
+  assert.notEqual(read.isError, true, JSON.stringify(read));
+  const scoped = await client.callTool({
+    name: 'skill_read', arguments: { groupId: 'general', skillId: 'scoped' },
+  });
+  assert.equal(scoped.isError, true);
+  assert.equal(scoped.structuredContent.error.code, 'SESSION_REQUIRED');
+});
+
 test('rejects malformed action payloads through the MCP schema', async (t) => {
   const client = await connect(t);
   const result = await client.callTool({

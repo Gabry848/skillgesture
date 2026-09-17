@@ -78,12 +78,12 @@ const SubskillRefSchema = z.strictObject({ groupId: IdSchema, skillId: IdSchema,
 export const NodeRefSchema = z.union([SubskillRefSchema, SkillRefSchema, GroupRefSchema]);
 
 export const TreeInputSchema = z.strictObject({
-  sessionId: SessionIdSchema.describe('Durable session UUID returned by skill_manage session.open'),
+  sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
   includeDisabled: z.boolean().optional().default(false),
 });
 
 export const ReadInputSchema = z.strictObject({
-  sessionId: SessionIdSchema.describe('Durable session UUID returned by skill_manage session.open'),
+  sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
   groupId: IdSchema,
   skillId: IdSchema,
   subskillId: IdSchema.optional(),

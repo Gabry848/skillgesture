@@ -369,18 +369,20 @@ export class SkillRegistry {
 
   async tree(sessionId, includeDisabled = false) {
     if (typeof includeDisabled !== 'boolean') fail('INVALID_INPUT', 'includeDisabled must be a boolean');
+    const globalOnly = sessionId === undefined;
     const [session, catalog, associations] = await Promise.all([
-      this.store.readSession(sessionId),
+      globalOnly ? Promise.resolve({ sessionId: null, version: null, folders: [] }) : this.store.readSession(sessionId),
       this.store.readCatalog(),
       this.store.readAssociations(),
     ]);
-    const projection = this.#project(catalog, associations, session, includeDisabled);
+    const projection = this.#project(catalog, associations, session, globalOnly ? false : includeDisabled);
     return {
-      sessionId,
+      sessionId: session.sessionId,
       sessionVersion: session.version,
       catalogRevision: catalog.revision,
       associationsRevision: associations.revision,
       folders: session.folders,
+      context: { scope: globalOnly ? 'global-only' : 'session', session: session.sessionId },
       groups: projection,
     };
   }
@@ -390,12 +392,16 @@ export class SkillRegistry {
     const requestedResourcePath = rawRef.resourcePath === undefined
       ? undefined
       : validateResourcePath(rawRef.resourcePath);
+    const globalOnly = sessionId === undefined;
     const [session, catalog, associations] = await Promise.all([
-      this.store.readSession(sessionId),
+      globalOnly ? Promise.resolve({ sessionId: null, version: null, folders: [] }) : this.store.readSession(sessionId),
       this.store.readCatalog(),
       this.store.readAssociations(),
     ]);
     const { group, skill } = findSkill(catalog, ref.groupId, ref.skillId);
+    if (globalOnly && !skill.global) {
+      fail('SESSION_REQUIRED', `Skill ${ref.groupId}/${ref.skillId} requires a session`);
+    }
     const matchedFolders = this.#matchedFolders(associations, session, ref.groupId, ref.skillId);
     const active = group.enabled && skill.enabled && (skill.global || matchedFolders.length > 0);
     if (!active) fail('SKILL_NOT_ACTIVE', `Skill ${ref.groupId}/${ref.skillId} is not active in this session`);
@@ -408,7 +414,8 @@ export class SkillRegistry {
       if (!node.enabled) fail('SKILL_NOT_ACTIVE', `Subskill ${ref.subskillId} is disabled`);
     }
     const common = {
-      sessionId,
+      sessionId: session.sessionId,
+      context: { scope: globalOnly ? 'global-only' : 'session', session: session.sessionId },
       catalogRevision: catalog.revision,
       kind,
       ref,

@@ -34,7 +34,7 @@ export function createMcpServer(registry) {
     'skill_tree',
     {
       title: 'List active skill tree',
-      description: 'Return a lightweight group → skill → subskill index for a durable session. Markdown bodies are never included.',
+      description: 'Return a lightweight group → skill → subskill index. Without a session, only enabled global skills are returned. Markdown bodies are never included.',
       inputSchema: TreeInputSchema,
       outputSchema: LooseOutputSchema,
     },
@@ -45,7 +45,7 @@ export function createMcpServer(registry) {
     'skill_read',
     {
       title: 'Read one active skill',
-      description: 'Load one Markdown skill body or one bundled supporting resource on demand. The skill must be enabled and active for the session.',
+      description: 'Load one Markdown skill body or bundled resource. Without a session, only enabled global content can be read.',
       inputSchema: ReadInputSchema,
       outputSchema: LooseOutputSchema,
     },
