@@ -1,0 +1,16 @@
+{
+  "skills": [
+    { "id": "git", "name": "Git Butler", "description": "Version control branches and commits" },
+    { "id": "github", "name": "GitHub Flow", "description": "Review pull requests safely" },
+    { "id": "node-test", "name": "Node Testing", "description": "Deterministic test runner guidance" },
+    { "id": "search", "name": "Semantic Search", "description": "Dependency-free lexical ranking" },
+    { "id": "docs", "name": "Documentation", "description": "Write concise project guides" }
+  ],
+  "queries": [
+    { "query": "git", "first": "git" },
+    { "query": "Git But", "first": "git" },
+    { "query": "pull requests", "first": "github" },
+    { "query": "node test", "first": "node-test" },
+    { "query": "lexical ranking", "first": "search" }
+  ]
+}

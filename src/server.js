@@ -38,23 +38,20 @@ export function createMcpServer(registry) {
       inputSchema: TreeInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ sessionId, includeDisabled }) => registry.tree(sessionId, includeDisabled)),
+    toolHandler(({ sessionId, ...options }) => registry.tree(sessionId, options)),
   );
 
   server.registerTool(
     'skill_read',
     {
-      title: 'Read one active skill',
-      description: 'Load one Markdown skill body or bundled resource. Without a session, only enabled global content can be read.',
+      title: 'Read active skills',
+      description: 'Load one or up to eight Markdown skill bodies or bundled resources. Without a session, only enabled global content can be read.',
       inputSchema: ReadInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ sessionId, groupId, skillId, subskillId, resourcePath }) => registry.read(sessionId, {
-      groupId,
-      skillId,
-      ...(subskillId === undefined ? {} : { subskillId }),
-      ...(resourcePath === undefined ? {} : { resourcePath }),
-    })),
+    toolHandler(({ sessionId, items, ...item }) => (
+      items === undefined ? registry.read(sessionId, item) : registry.readMany(sessionId, items)
+    )),
   );
 
   server.registerTool(

@@ -117,6 +117,42 @@ test('supports sessionless global discovery and reads over MCP', async (t) => {
   assert.equal(scoped.structuredContent.error.code, 'SESSION_REQUIRED');
 });
 
+test('supports open-with-discovery and ordered batch reads over MCP', async (t) => {
+  const client = await connect(t);
+  await call(client, 'group.upsert', { id: 'general', name: 'General' });
+  await call(client, 'skill.upsert', {
+    groupId: 'general', id: 'one', name: 'One', global: true, markdown: '# One',
+  });
+  await call(client, 'skill.upsert', {
+    groupId: 'general', id: 'two', name: 'Two', global: true, markdown: '# Two',
+  });
+  const opened = await call(client, 'session.open', {
+    discovery: { format: 'compact-v1', query: 'one', limit: 1 },
+  });
+  assert.equal(opened.discovery.format, 'compact-v1');
+  assert.equal(opened.discovery.groups[0].skills[0].id, 'one');
+
+  const batch = await client.callTool({
+    name: 'skill_read',
+    arguments: {
+      items: [
+        { groupId: 'general', skillId: 'two' },
+        { groupId: 'general', skillId: 'missing' },
+        { groupId: 'general', skillId: 'one' },
+      ],
+    },
+  });
+  assert.notEqual(batch.isError, true, JSON.stringify(batch));
+  assert.deepEqual(batch.structuredContent.items.map((item) => item.ok), [true, false, true]);
+  assert.equal(batch.structuredContent.items[1].error.code, 'SKILL_NOT_FOUND');
+
+  const tooMany = await client.callTool({
+    name: 'skill_read',
+    arguments: { items: Array(9).fill({ groupId: 'general', skillId: 'one' }) },
+  });
+  assert.equal(tooMany.isError, true);
+});
+
 test('rejects malformed action payloads through the MCP schema', async (t) => {
   const client = await connect(t);
   const result = await client.callTool({
