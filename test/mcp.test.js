@@ -50,6 +50,10 @@ test('advertises exactly three text-only tools without structured output schemas
   assert.deepEqual(manage.inputSchema.required, ['action']);
   assert.ok(manage.inputSchema.properties.action);
   assert.ok(manage.inputSchema.properties.data);
+  const read = listed.tools.find((tool) => tool.name === 'skill_read');
+  assert.ok(read.inputSchema.properties.groupId);
+  assert.ok(read.inputSchema.properties.skillId);
+  assert.ok(read.inputSchema.properties.items.items.properties.resourcePath);
 });
 
 test('supports session, lightweight tree, and on-demand read over MCP', async (t) => {
@@ -260,7 +264,7 @@ test('stdio entry point applies text and structured response modes without dupli
     const client = new Client({ name: 'stdio-verification', version: '1' });
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [fileURLToPath(new URL('../src/index.js', import.meta.url))],
+      args: [fileURLToPath(new URL('../src/local.js', import.meta.url))],
       env: { ...process.env, SKILLGESTURE_HOME: root, SKILLGESTURE_STRUCTURED_OUTPUT: structured ? '1' : '0' },
       stderr: 'pipe',
     });

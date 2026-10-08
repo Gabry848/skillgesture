@@ -742,4 +742,4 @@ export class SkillRegistry {
   }
 }
 
-export { ID_PATTERN };
+export { ID_PATTERN, indexVersion, encodeCursor, decodeCursor, lexicalRank, minimalSkills };

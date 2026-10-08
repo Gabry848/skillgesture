@@ -9,7 +9,7 @@ import {
 import { errorPayload } from './errors.js';
 import { minimalManage, minimalRead } from './presentation.js';
 
-function response(payload, structuredOutput, isError = false) {
+export function response(payload, structuredOutput, isError = false) {
   return {
     content: structuredOutput ? [] : [{ type: 'text', text: JSON.stringify(payload) }],
     ...(structuredOutput ? { structuredContent: payload } : {}),
@@ -17,7 +17,7 @@ function response(payload, structuredOutput, isError = false) {
   };
 }
 
-function toolHandler(handler, structuredOutput) {
+export function toolHandler(handler, structuredOutput) {
   return async (input) => {
     try {
       const result = await handler(input);

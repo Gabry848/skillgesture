@@ -1,13 +1,16 @@
 {
   "name": "skillgesture",
-  "version": "1.0.0",
-  "description": "Hierarchical skill management MCP server for AI agents",
+  "version": "2.0.0",
+  "description": "Cloud skill management over authenticated HTTPS MCP",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:local": "node src/local.js",
+    "admin": "node src/admin.js",
     "test": "node --test",
     "bench": "node benchmark/run.js",
-    "benchmark": "node benchmark/run.js"
+    "benchmark": "node benchmark/run.js",
+    "bench:cloud": "node benchmark/cloud.js"
   },
   "repository": {
     "type": "git",
@@ -21,14 +24,20 @@
   "homepage": "https://github.com/Gabry848/skillgesture#readme",
   "license": "ISC",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "pg": "^8.23.1",
     "proper-lockfile": "^4.1.2",
     "zod": "^4.5.4"
   },
   "bin": {
-    "skillgesture": "src/index.js"
+    "skillgesture": "src/index.js",
+    "skillgesture-admin": "src/admin.js",
+    "skillgesture-local": "src/local.js"
   },
   "engines": {
     "node": ">=24"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
   }
 }

@@ -99,18 +99,26 @@ const ReadItemSchema = z.strictObject({
   resourcePath: z.string().min(1).optional().describe('Optional bundled resource path returned by an earlier skill_read call'),
 });
 
-export const ReadInputSchema = z.union([
-  z.strictObject({
-    sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
-    format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
-    ...ReadItemSchema.shape,
-  }),
-  z.strictObject({
-    sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
-    format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
-    items: z.array(ReadItemSchema).min(1).max(8),
-  }),
-]);
+// MCP requires an object at the top level. A top-level Zod union is advertised
+// as an empty object by SDK v1, even though runtime validation still works.
+export const ReadInputSchema = z.strictObject({
+  sessionId: SessionIdSchema.optional().describe('Optional durable session UUID'),
+  format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
+  groupId: IdSchema.optional(),
+  skillId: IdSchema.optional(),
+  subskillId: IdSchema.optional(),
+  resourcePath: ReadItemSchema.shape.resourcePath,
+  items: z.array(ReadItemSchema).min(1).max(8).optional(),
+}).superRefine((input, ctx) => {
+  const singleFields = ['groupId', 'skillId', 'subskillId', 'resourcePath'];
+  if (input.items !== undefined) {
+    if (singleFields.some((key) => input[key] !== undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'items and single-read fields are mutually exclusive' });
+    }
+  } else if (input.groupId === undefined || input.skillId === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'A single read requires groupId and skillId' });
+  }
+});
 
 const InputResourceSchema = z.strictObject({
   path: z.string().min(1).max(240),
