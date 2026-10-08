@@ -1,0 +1,3 @@
+{$SKILLGESTURE_DOMAIN} {
+  reverse_proxy skillgesture:8080
+}

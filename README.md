@@ -1,363 +1,187 @@
-# Skillgesture
+# SkillGesture
 
-Skillgesture is a local MCP server for organizing and providing skills to AI agents. Skills are stored in a central repository, organized as **group → skill → subskill**, and loaded in full only when an agent requests them.
+SkillGesture gives agents a shared cloud catalog of skills without loading the whole catalog into their context. Skills belong to **categories**, Markdown is read on demand, and each agent can keep independent durable sessions.
 
-## MVP Features
+For example, an agent starts with the default development skills, selects the optional `fentaris` category for a coordination task, and reads only the relevant instructions:
 
-- central repository in `~/.skillgesture`;
-- skill content stored as Markdown;
-- catalog, associations, and sessions persisted as JSON;
-- global skills or skills associated with exact paths;
-- simultaneous loading of multiple folders;
-- lightweight index without Markdown content;
-- on-demand reading;
-- creation and modification of groups, skills, and subskills;
-- enabling and disabling nodes;
-- durable, independent sessions for multiple agents;
-- atomic writes and a shared cross-process lock.
-
-## Requirements
-
-- Node.js 24 or later
-- npm 12 or later
-
-## Installation
-
-```bash
-npm install
+```json
+{"action":"open","categories":["fentaris"],"discovery":{"query":"coordination","limit":5}}
 ```
 
-To make the `skillgesture` command globally available during development:
+Call this through `skill_context`, save the returned `sessionId` and `version`, then use `skill_read` with that ID and a discovered `ref`. Opening a session and discovering skills takes one round trip.
 
-```bash
-npm link
-```
+## Cloud endpoints
 
-## Running
+| Endpoint | Tools | Access |
+| --- | --- | --- |
+| `/mcp` | `skill_categories`, `skill_tree`, `skill_read`, `skill_context` | Any valid agent token |
+| `/mcp/admin` | The four runtime tools plus `category_manage`, `skill_manage`, `resource_manage` | Admin token |
 
-```bash
+Each request requires `Authorization: Bearer <agent-token>`. Tokens expire, can be revoked, and are stored only as hashes. Each token identifies an account and an agent. Different accounts have separate catalogs; sessions belong to their account and agent. Rotating a token with the same identity preserves access to that agent’s sessions.
+
+Register the runtime endpoint for agents that consume skills. Register the admin endpoint for agents that also manage the catalog; it includes the runtime tools, so registering both duplicates them.
+
+## Run
+
+Requirements: Node.js 24+, npm, and Postgres. Install dependencies with `npm ci`.
+
+The default command starts the cloud server:
+
+```sh
 npm start
 ```
 
-The server uses the MCP `stdio` transport. Diagnostic messages are written to `stderr`, while `stdout` is reserved for the MCP protocol.
+Supply settings through the environment or a secret manager; `.env.example` documents them. Node does not load `.env` automatically with this command.
 
-Agent responses contain one JSON text payload by default. The same data is no longer repeated in `structuredContent`. For clients that need typed structured results, set `SKILLGESTURE_STRUCTURED_OUTPUT=1`: the server then advertises output schemas and returns only `structuredContent` on success, with empty `content`. Errors always use a single readable text payload. Clients should parse `result.structuredContent ?? JSON.parse(result.content[0].text)`.
+- `PUBLIC_URL`: canonical HTTPS URL ending in `/mcp`.
+- Database: `DATABASE_URL`, or `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE` with `DATABASE_PASSWORD_FILE` or `PGPASSWORD`.
+- Native HTTPS: set both `TLS_CERT` and `TLS_KEY` to certificate/key files.
+- HTTPS proxy: set `TRUST_PROXY=1` only when the app is reachable exclusively through a trusted proxy that supplies `X-Forwarded-Proto: https`.
+- `HOST` defaults to `127.0.0.1`; `PORT` defaults to `8080`.
+- Browser clients: explicitly allow their origins with comma-separated `ALLOWED_ORIGINS`.
 
-Connect SkillGesture either directly or through a proxy such as Fentaris. Registering both exposes the same three tools twice. When using Fentaris in Codex, disable the direct entry with `enabled = false` under `[mcp_servers.skillgesture]` and retain the proxy. Restart the MCP client after changing registration or response mode.
+For local development only, `PUBLIC_URL=http://127.0.0.1:8080/mcp` with `ALLOW_INSECURE_LOCALHOST=1` enables HTTP on loopback. Production MCP requests require HTTPS. `/health` reports database readiness without returning deployment details.
 
-Example MCP client configuration:
+The MCP HTTP transport is request-local and returns JSON. Durable **agent sessions are stored in Postgres**, independent of transport connections and server restarts.
+
+## Create agent tokens
+
+The operator CLI uses database credentials and is not exposed through MCP:
+
+```sh
+npm run --silent admin -- token create --agent catalog-admin --admin
+npm run --silent admin -- token create --account <account-uuid> --agent codex
+npm run --silent admin -- token revoke --id <token-uuid>
+```
+
+The first command creates an account if `--account` is omitted. Token creation returns `accountId`, token `id`, `agentId`, access level and the secret **once**. Send that output directly to a secret manager or macOS Keychain. Keep agent tokens out of repository files and chat logs. `--days` sets expiry from 1 to 365 days; the default is 30.
+
+Use a distinct `--agent` identity for each agent. One agent can create multiple independent sessions, each with its own UUID. Agents cannot resume, configure, list or close another agent’s sessions, including when their token has admin access.
+
+## Categories and discovery
+
+A category’s `default` flag controls preloading. Its `enabled` flag controls availability. Preloading includes **metadata**, never every skill body.
+
+`skill_categories` lists all enabled available categories, including optional ones:
 
 ```json
-{
-  "mcpServers": {
-    "skillgesture": {
-      "command": "node",
-      "args": ["/absolute/path/to/skillgesture/src/index.js"]
-    }
-  }
-}
+{"query":"fentaris","limit":5}
 ```
 
-To use a different storage directory:
-
-```bash
-SKILLGESTURE_HOME=/alternative/path npm start
-```
-
-## The Three MCP Tools
-
-### `skill_manage`
-
-Manages sessions, the catalog, and associations through `session.open`, `session.configure`, `session.list`, `group.upsert`, `skill.upsert`, `subskill.upsert`, `node.setEnabled`, and `association.set`. `session.open` can include a `discovery` object and return compact discovery in the same round trip. Default minimal output retains session identifiers, concurrency versions, canonical folders, labels and optional discovery. Catalog mutations acknowledge the node's `version`; associations return the canonical `folder` and `associationsRevision`. Timestamps, storage paths and copies of catalog nodes are omitted. Use `format: "legacy"` for the original management metadata.
-
-### `skill_tree`
-
-Returns metadata only; Markdown bodies are never included. `sessionId` is optional:
-
-- without it, only enabled global skills and their enabled subskills are visible;
-- with it, global skills are unioned with skills associated with the session's exact canonical folders;
-- `format: "compact-v2"` is the MCP default: a flat `skills` list with readable references and descriptions, names only when they differ from IDs, folder scope only when relevant, and subskills only when present;
-- `format: "compact-v1"` preserves the earlier compact hierarchy and counts;
-- `format: "legacy"` preserves the original administrative fields and hierarchy. Direct registry calls still default to legacy for compatibility.
-
-Both compact formats accept `query`, `groupId`, `limit` (1–50), `cursor`, and `knownIndexVersion`. Ranking is deterministic: exact ID/ref, name prefix, ref prefix, name tokens, description tokens, then stable skill ref. Compact discovery is limited to 32 KiB of serialized registry JSON. In compact-v2, `truncated: true` includes `nextCursor`; `truncated: false` marks a complete result. Reusing the same valid `indexVersion` returns just that version and `notModified: true`, plus the MCP success flag. Cursors are opaque and valid only for the same session/catalog/association revisions, query and format. compact-v1 retains its counts, `complete` and continuation guidance. Disabled nodes requested in a scoped administrative discovery retain `enabled: false`.
-
-Example compact-v2 payload:
+`skill_tree` searches default categories and any explicitly selected categories:
 
 ```json
-{
-  "ok": true,
-  "indexVersion": "0123456789abcdef01234567",
-  "truncated": false,
-  "skills": [{ "ref": "coding/git", "description": "Version control guidance" }]
-}
+{"categoryIds":["fentaris"],"query":"coordination","limit":5}
 ```
 
-Split a `group/skill[/subskill]` reference into `groupId`, `skillId` and optional `subskillId` for `skill_read`. Selection descriptions and Markdown contents are never shortened.
+For an occasional request, pass `categoryIds` directly to discovery and reads. For a continuing task, open a session with `categories` and reuse its ID. `categoryId` on `skill_tree` filters the active set; it does not activate a category by itself.
 
-### `skill_read`
+Discovery returns compact refs and descriptions, with optional names and subskills. It accepts `query`, `limit` (1–50, default 12), `cursor` and `knownIndexVersion`. When `truncated` is true, pass `nextCursor` back as `cursor` using the same request context. When `notModified` is true, reuse the cached index. Cursors and versions are bound to identity, scope, query, page size, session version and catalog revision.
 
-Reads one active skill, subskill, or bundled resource, or accepts an `items` array of 1–8 reads. Minimal output returns unchanged `markdown` and resource paths only when resources exist. Resource loads retain `content`, `encoding` and `mimeType` for correct binary decoding. Batch results preserve input order and contain independent `ok`/`error` statuses, so one failure does not discard successful reads. The input order identifies each result; names, descriptions, references and revisions are not repeated. Use `format: "legacy"` for the original read metadata. Batch output has a deterministic 1 MiB safety cap; an item that would exceed it receives `RESPONSE_TOO_LARGE` and can be requested separately.
-
-Without `sessionId`, only enabled global content is readable. A folder-scoped parent returns `SESSION_REQUIRED`; subskills inherit the parent's scope. Reading Markdown returns a resource index. Supplying `resourcePath` loads only that safe relative resource. Text resources are UTF-8 and binary resources are Base64.
-
-## Recommended Agent Workflow
-
-### 1. Discover Globals Without a Session
-
-Agents that only need global instructions can skip session creation:
-
-```json
-{ "format": "compact-v2", "query": "version control", "limit": 10 }
-```
-
-Without `sessionId`, discovery and reads expose only enabled global content. compact-v2 omits repeated request context.
-
-### 2. Open a Scoped Session and Discover in One Turn
-
-```json
-{
-  "action": "session.open",
-  "data": {
-    "label": "coding-agent",
-    "folders": ["/Users/example/projects/api"],
-    "discovery": {
-      "format": "compact-v2",
-      "query": "testing",
-      "limit": 10
-    }
-  }
-}
-```
-
-Persist the returned `session.sessionId`. To resume, call `session.open` with that `sessionId`; an unknown ID never creates a replacement session implicitly. The same optional `discovery` object works when resuming.
-
-### 3. Keep Session Folders Current
-
-```json
-{
-  "action": "session.configure",
-  "data": {
-    "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
-    "mode": "add",
-    "folders": ["/Users/example/projects/another-project"]
-  }
-}
-```
-
-`mode` can be `replace`, `add`, or `remove`.
-
-### 4. Continue or Revalidate Compact Discovery
-
-Pass `nextCursor` back as `cursor` while `truncated` is true, keeping the same query and format. On a later turn, pass the previous `indexVersion` as `knownIndexVersion`; if the effective index is unchanged, reuse the cached results after `notModified: true`. Do not send search, cursor, or version fields with legacy format.
-
-Legacy clients can continue using:
-
-```json
-{
-  "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
-  "format": "legacy",
-  "includeDisabled": false
-}
-```
-
-### 5. Read One or Several Results
+## Read only what is needed
 
 Single read:
 
 ```json
-{
-  "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
-  "groupId": "coding",
-  "skillId": "nodejs",
-  "subskillId": "testing"
-}
+{"sessionId":"<uuid>","ref":"fentaris/coordination"}
 ```
 
-Batch read:
+Batch read, preserving order and independent item errors:
 
 ```json
-{
-  "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
-  "items": [
-    { "groupId": "coding", "skillId": "nodejs" },
-    { "groupId": "coding", "skillId": "git", "resourcePath": "references/rebase.md" }
-  ]
-}
+{"items":[{"ref":"general/git"},{"ref":"general/git","resourcePath":"references/rebase.md"}]}
 ```
 
-The single-item fields and `items` are mutually exclusive.
+A batch accepts 1–8 items and has a 1 MiB response budget. Oversized items receive `RESPONSE_TOO_LARGE` and can be requested separately. Single reads return unchanged Markdown and a resource-path index when resources exist. Resource reads return `content`, `encoding` and `mimeType`; binary data uses Base64. Resource paths are logical bundle paths, not server filesystem paths.
 
-## Creating the Catalog
+Single-read fields and `items` are mutually exclusive. The MCP tool publishes their actual object schema in `tools/list`.
 
-### Group
+Responses have one JSON text payload by default. `SKILLGESTURE_STRUCTURED_OUTPUT=1` advertises output schemas and uses only `structuredContent` for success, with empty `content`. Errors retain one readable text payload. Clients can parse `result.structuredContent ?? JSON.parse(result.content[0].text)`.
+
+## Durable sessions
+
+Open a fresh session with `action: "open"`, optional `label`, `categories` and `discovery`. Resume with `action: "open"` and `sessionId`; an unknown ID never creates a replacement. Configure and close require the current `expectedVersion`.
 
 ```json
-{
-  "action": "group.upsert",
-  "data": {
-    "id": "coding",
-    "name": "Coding",
-    "description": "Development skills"
-  }
-}
+{"action":"configure","sessionId":"<uuid>","mode":"add","categories":["fentaris"],"expectedVersion":1}
 ```
 
-### Global Skill
+`mode` supports `replace`, `add` and `remove`. Default categories always remain available; configuration changes the selected optional categories. `action: "list"` returns only the authenticated agent’s sessions and supports bounded pagination/search. `action: "close"` removes that session, not catalog content.
+
+## Manage the catalog
+
+Use these tools through `/mcp/admin`:
+
+| Tool | Actions |
+| --- | --- |
+| `category_manage` | `list`, `get`, `upsert`, `delete`, `restore` |
+| `skill_manage` | `list`, `get`, `upsert`, `delete`, `restore` |
+| `resource_manage` | `upsert`, `delete` on one bundled path |
+
+Create an optional category:
 
 ```json
-{
-  "action": "skill.upsert",
-  "data": {
-    "groupId": "coding",
-    "id": "git",
-    "name": "Git",
-    "description": "Version control management",
-    "global": true,
-    "markdown": "# Git\n\nSkill instructions."
-  }
-}
+{"action":"upsert","id":"fentaris","name":"Fentaris","description":"Agent coordination","default":false}
 ```
 
-### Folder-Scoped Skill
+Create a skill, or use a three-part ref for a subskill:
 
 ```json
-{
-  "action": "skill.upsert",
-  "data": {
-    "groupId": "coding",
-    "id": "nodejs",
-    "name": "Node.js",
-    "global": false,
-    "markdown": "# Node.js\n\nSkill instructions."
-  }
-}
+{"action":"upsert","ref":"fentaris/coordination","name":"Coordination","description":"Coordinate agent work","markdown":"# Coordination\n\nInstructions."}
 ```
 
-### Subskill
+Update a skill after `get` returns its current version:
 
 ```json
-{
-  "action": "subskill.upsert",
-  "data": {
-    "groupId": "coding",
-    "skillId": "nodejs",
-    "id": "testing",
-    "name": "Node testing",
-    "markdown": "# Node testing\n\nUse node:test."
-  }
-}
+{"action":"upsert","ref":"fentaris/coordination","markdown":"# Updated instructions","expectedVersion":1}
 ```
 
-Subskills inherit the scope of their parent skill.
-
-## Associating a Skill with a Folder
+Attach one resource through `resource_manage`:
 
 ```json
-{
-  "action": "association.set",
-  "data": {
-    "folder": "/Users/example/projects/api",
-    "skills": [
-      {
-        "groupId": "coding",
-        "skillId": "nodejs"
-      }
-    ]
-  }
-}
+{"action":"upsert","ref":"fentaris/coordination","path":"references/protocol.md","content":"Protocol details","expectedVersion":2}
 ```
 
-`association.set` replaces the folder's entire set of skills. An empty array removes the association.
+Existing nodes require `expectedVersion`; stale writes return `VERSION_CONFLICT`. Mutations return only the new `version`. A resource edit advances its parent node’s version and retains unchanged resources. Resources are limited to 5 MiB each, 20 MiB and 200 paths per node. Markdown is limited to 256 KiB; HTTP request bodies are limited to 8 MiB.
 
-Associations are based on the exact canonical path:
+Delete operations archive categories or nodes; `restore` reverses deletion. Archived/disabled parents hide descendants. Administrative `list` and `get` expose metadata and versions; `includeDeleted: true` makes archived nodes inspectable. Immutable content/resource revisions and an audit record remain in SQL. Skill bodies are still fetched through `skill_read` when active and selected.
 
-- an association with `/projects/api` does not automatically apply to `/projects/api/packages/web`;
-- folders must exist when they are loaded or associated;
-- a session can contain multiple folders and receives the deduplicated union of their skills.
+## Import the local catalog
 
-## Enabling and Disabling Nodes
+The operator CLI imports the existing store into an **empty account**, in one transaction:
 
-```json
-{
-  "action": "node.setEnabled",
-  "data": {
-    "ref": {
-      "groupId": "coding",
-      "skillId": "nodejs"
-    },
-    "enabled": false
-  }
-}
+```sh
+npm run --silent admin -- import --root /absolute/path/to/.skillgesture --account <account-uuid>
 ```
 
-Disabling a group disables all its descendant skills. Disabling a skill also makes its subskills unreadable. `skill_tree` can show disabled nodes when called with `includeDisabled: true`.
+Groups become categories. Entirely global groups become default categories; entirely folder-scoped groups become optional. Mixed groups require an explicit `--defaults coding,general` selection (use `--defaults ''` for no defaults), preventing accidental scope broadening.
 
-## Concurrency and Versions
+The import preserves active versions, Markdown, resources and subskills without changing the source. Historical Markdown and original resource artifacts are retained; `sg_import_metadata` and `sg_import_files` preserve the original catalog/associations and bundle artifacts for recovery. The old format did not retain complete historical metadata/resource manifests, so those cannot be reconstructed as complete revision snapshots. Folder associations are archived rather than used as cloud authorization.
 
-Multiple MCP processes can use the same repository. Sessions are stored separately, mutations are serialized through a cross-process lock, and JSON replacement is atomic.
+Local sessions do not carry authenticated agent identities and are not automatically assigned to cloud agents. Create cloud sessions using each agent’s token. The local compatibility server remains available through `npm run start:local` or `skillgesture-local`; new cloud tools accept categories, not filesystem folders.
 
-Validated catalogs, associations, and sessions use a read-through cache. Every cache hit first compares filesystem identity and high-resolution stat metadata, so another process's atomic replacement is observed. Same-process writes invalidate immediately, callers receive isolated clones, and metadata/cache failures fall back to authoritative disk reads instead of stale authorization data.
+## Container deployment
 
-Update operations accept `expectedVersion`; `association.set` accepts `expectedRevision`. If another agent has already changed the data, Skillgesture returns `VERSION_CONFLICT` instead of silently overwriting the change.
+`compose.yaml` supplies Postgres, the Node service and Caddy HTTPS termination. Set `SKILLGESTURE_DOMAIN` to a domain pointing to the host and `SKILLGESTURE_DB_PASSWORD_FILE` to an external password file readable by the containers, then run:
 
-## Central Repository
-
-```text
-~/.skillgesture/
-├── catalog.json
-├── associations.json
-├── sessions/
-│   └── <session-id>.json
-└── skills/
-    └── <group-id>/
-        └── <skill-id>/
-            ├── versions/
-            │   └── <version>/
-            │       ├── SKILL.md
-            │       └── resources/
-            └── subskills/
-                └── <subskill-id>/
-                    └── versions/
-                        └── <version>/
-                            ├── SKILL.md
-                            └── resources/
+```sh
+docker compose up -d --build
+docker compose exec skillgesture node src/admin.js token create --agent catalog-admin --admin
 ```
 
-Markdown versions are immutable. The catalog points to the active version, preventing reads from observing partially updated content.
+Only Caddy publishes ports. The app/database remain on the internal network; Postgres data and HTTPS state use persistent volumes. Manage backups with the usual Postgres backup tools. A managed Postgres service and another HTTPS proxy can use the same application entry point.
 
-## Tests and Benchmarks
+## Verification
 
-```bash
+```sh
 npm test
-npm run benchmark
-```
-
-The benchmark deterministically generates temporary catalogs with 10, 100, 1,000, and 10,000 skills. It reports legacy/compact-v1/compact-v2/search/not-modified serialized bytes, compact-v2 reduction against compact-v1, `ceil(bytes / 4)` estimated tokens, cold/warm discovery/search/read latency, heap deltas, and measured MCP/registry call counts for loading 1, 3, and 8 skills. Timings and heap figures are informational, never CI assertions. Large discovery payload comparisons can represent different page sizes; check the returned entries before interpreting reductions.
-
-For a quick smoke run:
-
-```bash
-npm run benchmark -- --sizes=10,100
-```
-
-Tests and benchmarks use temporary directories and do not modify `~/.skillgesture`.
-
-### Benchmark commands
-
-Run the deterministic benchmark across 10, 100, 1,000, and 10,000 generated skills:
-
-```bash
-npm run bench
-```
-
-For a quick 10/100-skill smoke run:
-
-```bash
+npm run bench:cloud -- --smoke
 npm run bench -- --smoke
 ```
 
-The benchmark reports serialized bytes, estimated tokens, compact-versus-legacy reduction, discovery/search/read latency, and individual-versus-batch call counts. Latency measurements are informational and are not used as flaky CI assertions.
+Cloud tests run the production SQL against embedded Postgres by default, including persistence after restart, account/agent isolation, version conflicts, reversible deletion, import rollback and real MCP HTTP/HTTPS calls. Set `SKILLGESTURE_TEST_DATABASE_URL` to a dedicated Postgres test database to exercise the `pg` wire driver; tests create and remove isolated schemas. Loopback listening is required for HTTP tests.
+
+The cloud benchmark compares discovery against a local compact-v2 control with identical entries, measures tool definitions and read/batch envelopes, and reports `ceil(bytes/4)` estimated tokens. Timings are informational. The original local benchmark remains available for comparison.
 
 ## License
 

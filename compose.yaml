@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: skillgesture
+      POSTGRES_DB: skillgesture
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [database_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skillgesture -d skillgesture"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  skillgesture:
+    build: .
+    environment:
+      PUBLIC_URL: https://${SKILLGESTURE_DOMAIN:?Set SKILLGESTURE_DOMAIN}/mcp
+      HOST: 0.0.0.0
+      PORT: 8080
+      TRUST_PROXY: 1
+      PGHOST: postgres
+      PGUSER: skillgesture
+      PGDATABASE: skillgesture
+      DATABASE_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [database_password]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SKILLGESTURE_DOMAIN: ${SKILLGESTURE_DOMAIN:?Set SKILLGESTURE_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      skillgesture:
+        condition: service_healthy
+    restart: unless-stopped
+
+secrets:
+  database_password:
+    file: ${SKILLGESTURE_DB_PASSWORD_FILE:?Set an external database password file}
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

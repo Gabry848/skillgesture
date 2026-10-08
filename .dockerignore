@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+.env.*
+.agents
+.codex
+test
+support
+benchmark
+coverage
+*.log
