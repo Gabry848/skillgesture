@@ -107,6 +107,7 @@ async function benchmarkSize(base, size) {
   const heapAfterDiscovery = process.memoryUsage().heapUsed;
   const discoveryWarm = await timed(() => discoveryRegistry.tree(undefined, { format: 'compact-v1' }));
   const legacy = await discoveryRegistry.tree();
+  const minimal = await discoveryRegistry.tree(undefined, { format: 'compact-v2' });
   const notModified = await discoveryRegistry.tree(undefined, {
     format: 'compact-v1', knownIndexVersion: discoveryWarm.value.indexVersion,
   });
@@ -122,6 +123,7 @@ async function benchmarkSize(base, size) {
   const readWarm = await timed(() => readRegistry.read(undefined, ref));
   const legacyPayload = payload(legacy);
   const compactPayload = payload(discoveryWarm.value);
+  const minimalPayload = payload(minimal);
 
   return {
     skills: size,
@@ -129,6 +131,8 @@ async function benchmarkSize(base, size) {
       legacy: legacyPayload,
       compact: compactPayload,
       compactVsLegacyReduction: reduction(legacyPayload, compactPayload),
+      compactV2: minimalPayload,
+      compactV2VsCompactV1Reduction: reduction(compactPayload, minimalPayload),
       search: payload(searchWarm.value),
       notModified: payload(notModified),
     },
