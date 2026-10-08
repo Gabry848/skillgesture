@@ -41,6 +41,10 @@ npm start
 
 The server uses the MCP `stdio` transport. Diagnostic messages are written to `stderr`, while `stdout` is reserved for the MCP protocol.
 
+Agent responses contain one JSON text payload by default. The same data is no longer repeated in `structuredContent`. For clients that need typed structured results, set `SKILLGESTURE_STRUCTURED_OUTPUT=1`: the server then advertises output schemas and returns only `structuredContent` on success, with empty `content`. Errors always use a single readable text payload. Clients should parse `result.structuredContent ?? JSON.parse(result.content[0].text)`.
+
+Connect SkillGesture either directly or through a proxy such as Fentaris. Registering both exposes the same three tools twice. When using Fentaris in Codex, disable the direct entry with `enabled = false` under `[mcp_servers.skillgesture]` and retain the proxy. Restart the MCP client after changing registration or response mode.
+
 Example MCP client configuration:
 
 ```json
@@ -64,7 +68,7 @@ SKILLGESTURE_HOME=/alternative/path npm start
 
 ### `skill_manage`
 
-Manages sessions, the catalog, and associations through `session.open`, `session.configure`, `session.list`, `group.upsert`, `skill.upsert`, `subskill.upsert`, `node.setEnabled`, and `association.set`. `session.open` can include a `discovery` object and return compact discovery in the same round trip.
+Manages sessions, the catalog, and associations through `session.open`, `session.configure`, `session.list`, `group.upsert`, `skill.upsert`, `subskill.upsert`, `node.setEnabled`, and `association.set`. `session.open` can include a `discovery` object and return compact discovery in the same round trip. Default minimal output retains session identifiers, concurrency versions, canonical folders, labels and optional discovery. Catalog mutations acknowledge the node's `version`; associations return the canonical `folder` and `associationsRevision`. Timestamps, storage paths and copies of catalog nodes are omitted. Use `format: "legacy"` for the original management metadata.
 
 ### `skill_tree`
 
@@ -72,14 +76,28 @@ Returns metadata only; Markdown bodies are never included. `sessionId` is option
 
 - without it, only enabled global skills and their enabled subskills are visible;
 - with it, global skills are unioned with skills associated with the session's exact canonical folders;
-- `format: "legacy"` is the default and preserves the original fields and hierarchy;
-- `format: "compact-v1"` removes administrative fields and adds bounded search, pagination, byte-budget truncation, and change detection.
+- `format: "compact-v2"` is the MCP default: a flat `skills` list with readable references and descriptions, names only when they differ from IDs, folder scope only when relevant, and subskills only when present;
+- `format: "compact-v1"` preserves the earlier compact hierarchy and counts;
+- `format: "legacy"` preserves the original administrative fields and hierarchy. Direct registry calls still default to legacy for compatibility.
 
-Compact discovery accepts `query`, `groupId`, `limit` (1–50), `cursor`, and `knownIndexVersion`. Ranking is deterministic: exact ID/ref, name prefix, ref prefix, name tokens, description tokens, then stable skill ref. Compact responses are limited to 32 KiB of serialized JSON and expose counts plus explicit completeness. A response with `truncated: true` always includes `nextCursor` and structured continuation guidance. Reusing the same valid `indexVersion` as `knownIndexVersion` returns a small `notModified` response. Cursors are opaque and valid only for the same session/catalog/association revisions and request mode.
+Both compact formats accept `query`, `groupId`, `limit` (1–50), `cursor`, and `knownIndexVersion`. Ranking is deterministic: exact ID/ref, name prefix, ref prefix, name tokens, description tokens, then stable skill ref. Compact discovery is limited to 32 KiB of serialized registry JSON. In compact-v2, `truncated: true` includes `nextCursor`; `truncated: false` marks a complete result. Reusing the same valid `indexVersion` returns just that version and `notModified: true`, plus the MCP success flag. Cursors are opaque and valid only for the same session/catalog/association revisions, query and format. compact-v1 retains its counts, `complete` and continuation guidance. Disabled nodes requested in a scoped administrative discovery retain `enabled: false`.
+
+Example compact-v2 payload:
+
+```json
+{
+  "ok": true,
+  "indexVersion": "0123456789abcdef01234567",
+  "truncated": false,
+  "skills": [{ "ref": "coding/git", "description": "Version control guidance" }]
+}
+```
+
+Split a `group/skill[/subskill]` reference into `groupId`, `skillId` and optional `subskillId` for `skill_read`. Selection descriptions and Markdown contents are never shortened.
 
 ### `skill_read`
 
-Reads one active skill, subskill, or bundled resource, or accepts an `items` array of 1–8 reads. Batch results preserve input order and contain independent `ok`/`error` statuses, so one failure does not discard successful reads. Batch output has a deterministic 1 MiB safety cap; an item that would exceed it receives `RESPONSE_TOO_LARGE` and can be requested separately.
+Reads one active skill, subskill, or bundled resource, or accepts an `items` array of 1–8 reads. Minimal output returns unchanged `markdown` and resource paths only when resources exist. Resource loads retain `content`, `encoding` and `mimeType` for correct binary decoding. Batch results preserve input order and contain independent `ok`/`error` statuses, so one failure does not discard successful reads. The input order identifies each result; names, descriptions, references and revisions are not repeated. Use `format: "legacy"` for the original read metadata. Batch output has a deterministic 1 MiB safety cap; an item that would exceed it receives `RESPONSE_TOO_LARGE` and can be requested separately.
 
 Without `sessionId`, only enabled global content is readable. A folder-scoped parent returns `SESSION_REQUIRED`; subskills inherit the parent's scope. Reading Markdown returns a resource index. Supplying `resourcePath` loads only that safe relative resource. Text resources are UTF-8 and binary resources are Base64.
 
@@ -90,10 +108,10 @@ Without `sessionId`, only enabled global content is readable. A folder-scoped pa
 Agents that only need global instructions can skip session creation:
 
 ```json
-{ "format": "compact-v1", "query": "version control", "limit": 10 }
+{ "format": "compact-v2", "query": "version control", "limit": 10 }
 ```
 
-The response context is `{ "scope": "global-only", "session": null }`.
+Without `sessionId`, discovery and reads expose only enabled global content. compact-v2 omits repeated request context.
 
 ### 2. Open a Scoped Session and Discover in One Turn
 
@@ -104,7 +122,7 @@ The response context is `{ "scope": "global-only", "session": null }`.
     "label": "coding-agent",
     "folders": ["/Users/example/projects/api"],
     "discovery": {
-      "format": "compact-v1",
+      "format": "compact-v2",
       "query": "testing",
       "limit": 10
     }
@@ -131,13 +149,14 @@ Persist the returned `session.sessionId`. To resume, call `session.open` with th
 
 ### 4. Continue or Revalidate Compact Discovery
 
-Pass `nextCursor` back as `cursor` until `complete` is true. On a later turn, pass the previous `indexVersion` as `knownIndexVersion`; if the effective index is unchanged, the server returns `notModified: true` without repeating the tree. Do not send search, cursor, or version fields with legacy format.
+Pass `nextCursor` back as `cursor` while `truncated` is true, keeping the same query and format. On a later turn, pass the previous `indexVersion` as `knownIndexVersion`; if the effective index is unchanged, reuse the cached results after `notModified: true`. Do not send search, cursor, or version fields with legacy format.
 
 Legacy clients can continue using:
 
 ```json
 {
   "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
+  "format": "legacy",
   "includeDisabled": false
 }
 ```
@@ -314,7 +333,7 @@ npm test
 npm run benchmark
 ```
 
-The benchmark deterministically generates temporary catalogs with 10, 100, 1,000, and 10,000 skills. It reports legacy/compact/search/not-modified serialized bytes, `ceil(bytes / 4)` estimated tokens, cold/warm discovery/search/read latency, heap deltas, and measured MCP/registry call counts for loading 1, 3, and 8 skills. Timings and heap figures are informational, never CI assertions.
+The benchmark deterministically generates temporary catalogs with 10, 100, 1,000, and 10,000 skills. It reports legacy/compact-v1/compact-v2/search/not-modified serialized bytes, compact-v2 reduction against compact-v1, `ceil(bytes / 4)` estimated tokens, cold/warm discovery/search/read latency, heap deltas, and measured MCP/registry call counts for loading 1, 3, and 8 skills. Timings and heap figures are informational, never CI assertions. Large discovery payload comparisons can represent different page sizes; check the returned entries before interpreting reductions.
 
 For a quick smoke run:
 
