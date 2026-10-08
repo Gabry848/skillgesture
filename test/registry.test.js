@@ -173,3 +173,23 @@ test('persists independent durable sessions across registry instances', async (t
   const listed = await restarted.manage('session.list', {});
   assert.equal(listed.sessions.length, 2);
 });
+
+test('compact-v2 keeps scoped subskill refs and disabled states without leaking folder skills globally', async (t) => {
+  const { registry, folderA } = await fixture(t);
+  await seed(registry, folderA);
+  const globals = await registry.tree(undefined, { format: 'compact-v2', includeDisabled: true });
+  assert.deepEqual(globals.skills.map((item) => item.ref), ['coding/git']);
+  const session = (await registry.manage('session.open', { folders: [folderA] })).session;
+  const scoped = await registry.tree(session.sessionId, { format: 'compact-v2' });
+  const node = scoped.skills.find((item) => item.ref === 'coding/node');
+  assert.equal(node.name, 'Node.js');
+  assert.equal(node.scope, 'folder');
+  assert.equal(node.subskills[0].ref, 'coding/node/testing');
+  assert.equal(node.subskills[0].enabled, undefined);
+
+  await registry.manage('node.setEnabled', { ref: { groupId: 'coding' }, enabled: false });
+  const disabled = await registry.tree(session.sessionId, { format: 'compact-v2', includeDisabled: true });
+  assert.ok(disabled.skills.every((item) => item.enabled === false));
+  assert.equal(disabled.skills.find((item) => item.ref === 'coding/node').subskills[0].enabled, false);
+  assert.deepEqual((await registry.tree(undefined, { format: 'compact-v2', includeDisabled: true })).skills, []);
+});

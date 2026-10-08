@@ -78,7 +78,7 @@ const SubskillRefSchema = z.strictObject({ groupId: IdSchema, skillId: IdSchema,
 export const NodeRefSchema = z.union([SubskillRefSchema, SkillRefSchema, GroupRefSchema]);
 
 const DiscoveryInputShape = {
-  format: z.enum(['legacy', 'compact-v1']).optional().default('legacy'),
+  format: z.enum(['legacy', 'compact-v1', 'compact-v2']).optional().default('compact-v2'),
   includeDisabled: z.boolean().optional().default(false),
   query: z.string().trim().min(1).max(200).optional(),
   groupId: IdSchema.optional(),
@@ -102,10 +102,12 @@ const ReadItemSchema = z.strictObject({
 export const ReadInputSchema = z.union([
   z.strictObject({
     sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
+    format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
     ...ReadItemSchema.shape,
   }),
   z.strictObject({
     sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
+    format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
     items: z.array(ReadItemSchema).min(1).max(8),
   }),
 ]);
@@ -118,6 +120,7 @@ const InputResourceSchema = z.strictObject({
 });
 
 export const ManageToolInputSchema = z.strictObject({
+  format: z.enum(['minimal', 'legacy']).optional().default('minimal'),
   action: z.enum([
     'session.open',
     'session.configure',

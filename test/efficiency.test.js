@@ -155,3 +155,74 @@ test('batch response cap reports oversized items without discarding earlier read
   assert.ok(result.items.some((item) => item.error?.code === 'RESPONSE_TOO_LARGE'));
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 1024 * 1024);
 });
+
+test('compact-v2 preserves search decisions and paginates the full index without repeated metadata', async (t) => {
+  const registry = await fixture(t);
+  for (const entry of corpus.queries) {
+    const result = await registry.tree(undefined, { format: 'compact-v2', query: entry.query });
+    assert.equal(result.skills[0].ref, `tools/${entry.first}`, entry.query);
+  }
+  const baseline = await registry.tree(undefined, { format: 'compact-v1' });
+  const minimal = await registry.tree(undefined, { format: 'compact-v2' });
+  assert.deepEqual(minimal.skills.map((item) => item.ref), compactSkills(baseline).map((item) => item.ref));
+  assert.ok(Buffer.byteLength(JSON.stringify(minimal)) < Buffer.byteLength(JSON.stringify(baseline)));
+  assert.equal('groups' in minimal, false);
+  assert.equal('context' in minimal, false);
+  assert.equal('counts' in minimal, false);
+  assert.ok(minimal.skills.every((item) => !('id' in item) && !('subskills' in item)));
+
+  const refs = [];
+  let cursor;
+  do {
+    const page = await registry.tree(undefined, { format: 'compact-v2', limit: 2, cursor });
+    refs.push(...page.skills.map((item) => item.ref));
+    assert.equal(page.truncated, page.nextCursor !== undefined);
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.deepEqual(refs, minimal.skills.map((item) => item.ref));
+  assert.equal(new Set(refs).size, refs.length);
+});
+
+test('compact-v2 cache and cursors cannot cross query, format, or catalog changes', async (t) => {
+  const registry = await fixture(t);
+  const initial = await registry.tree(undefined, { format: 'compact-v2', query: 'git', limit: 1 });
+  const cached = await registry.tree(undefined, {
+    format: 'compact-v2', query: 'git', knownIndexVersion: initial.indexVersion,
+  });
+  assert.deepEqual(cached, { indexVersion: initial.indexVersion, notModified: true });
+  const different = await registry.tree(undefined, {
+    format: 'compact-v2', query: 'docs', knownIndexVersion: initial.indexVersion,
+  });
+  assert.equal(different.notModified, undefined);
+  assert.equal(different.skills[0].ref, 'tools/docs');
+
+  const page = await registry.tree(undefined, { format: 'compact-v2', limit: 1 });
+  for (const options of [{ format: 'compact-v1' }, { format: 'compact-v2', query: 'git' }]) {
+    await assert.rejects(registry.tree(undefined, { ...options, cursor: page.nextCursor }),
+      (error) => error.code === 'INVALID_CURSOR');
+  }
+  await registry.manage('skill.upsert', { groupId: 'tools', id: 'git', description: 'Changed instructions' });
+  await assert.rejects(registry.tree(undefined, { format: 'compact-v2', cursor: page.nextCursor }),
+    (error) => error.code === 'INVALID_CURSOR');
+  const changed = await registry.tree(undefined, {
+    format: 'compact-v2', query: 'git', knownIndexVersion: initial.indexVersion,
+  });
+  assert.notEqual(changed.indexVersion, initial.indexVersion);
+});
+
+test('compact-v2 enforces its byte budget and preserves resumable truncation', async (t) => {
+  const registry = await fixture(t);
+  for (let index = 0; index < 40; index += 1) {
+    await registry.manage('skill.upsert', {
+      groupId: 'tools', id: `large-${index}`, name: `Large ${index}`,
+      description: 'description '.repeat(80), global: true, markdown: '# Large',
+    });
+  }
+  const page = await registry.tree(undefined, { format: 'compact-v2', limit: 50 });
+  assert.equal(page.truncated, true);
+  assert.ok(page.nextCursor);
+  assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 32 * 1024);
+  const next = await registry.tree(undefined, { format: 'compact-v2', limit: 50, cursor: page.nextCursor });
+  assert.equal(next.truncated, false);
+  assert.equal(page.skills.length + next.skills.length, corpus.skills.length + 40);
+});

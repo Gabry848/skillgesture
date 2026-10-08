@@ -7,51 +7,56 @@ import {
   TreeInputSchema,
 } from './contracts.js';
 import { errorPayload } from './errors.js';
+import { minimalManage, minimalRead } from './presentation.js';
 
-function response(payload, isError = false) {
+function response(payload, structuredOutput, isError = false) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
-    structuredContent: payload,
+    content: structuredOutput ? [] : [{ type: 'text', text: JSON.stringify(payload) }],
+    ...(structuredOutput ? { structuredContent: payload } : {}),
     ...(isError ? { isError: true } : {}),
   };
 }
 
-function toolHandler(handler) {
+function toolHandler(handler, structuredOutput) {
   return async (input) => {
     try {
       const result = await handler(input);
-      return response({ ok: true, ...result });
+      return response({ ok: true, ...result }, structuredOutput);
     } catch (error) {
-      return response(errorPayload(error), true);
+      // Keep errors readable even for structured clients that display only text.
+      return response(errorPayload(error), false, true);
     }
   };
 }
 
-export function createMcpServer(registry) {
+export function createMcpServer(registry, { structuredOutput = false } = {}) {
   const server = new McpServer({ name: 'skillgesture', version: '1.0.0' });
+  const output = structuredOutput ? { outputSchema: LooseOutputSchema } : {};
 
   server.registerTool(
     'skill_tree',
     {
       title: 'List active skill tree',
-      description: 'Discover skill metadata without Markdown. Sessionless calls expose enabled globals. Legacy is default; compact-v1 adds bounded lexical search, cursors, truncation status, and notModified checks.',
+      description: 'Discover enabled skill metadata. Default compact-v2 returns skill refs and descriptions with bounded search, pagination and cache checks. Omit sessionId for globals. Legacy and compact-v1 remain available.',
       inputSchema: TreeInputSchema,
-      outputSchema: LooseOutputSchema,
+      ...output,
     },
-    toolHandler(({ sessionId, ...options }) => registry.tree(sessionId, options)),
+    toolHandler(({ sessionId, ...options }) => registry.tree(sessionId, options), structuredOutput),
   );
 
   server.registerTool(
     'skill_read',
     {
       title: 'Read active skills',
-      description: 'Load one or up to eight Markdown skill bodies or bundled resources. Batches preserve order with per-item status. Sessionless reads permit enabled global content only.',
+      description: 'Read one or up to eight skills or resources. Minimal output keeps contents, resource paths and per-item errors. Batches preserve order. Split discovery refs on / into groupId, skillId and optional subskillId. Omit sessionId for globals; format legacy restores metadata.',
       inputSchema: ReadInputSchema,
-      outputSchema: LooseOutputSchema,
+      ...output,
     },
-    toolHandler(({ sessionId, items, ...item }) => (
-      items === undefined ? registry.read(sessionId, item) : registry.readMany(sessionId, items)
-    )),
+    toolHandler(async ({ sessionId, items, format, ...item }) => {
+      const result = items === undefined
+        ? await registry.read(sessionId, item) : await registry.readMany(sessionId, items);
+      return format === 'legacy' ? result : minimalRead(result);
+    }, structuredOutput),
   );
 
   server.registerTool(
@@ -61,15 +66,16 @@ export function createMcpServer(registry) {
       description: [
         'Create/resume/configure durable sessions and manage the central skill catalog.',
         'Actions: session.open, session.configure, session.list, group.upsert, skill.upsert, subskill.upsert, node.setEnabled, association.set.',
-        'Sessionless discovery/read supports globals. Use session.open for exact canonical-folder scope and optionally include compact discovery in the same response. Persist returned session IDs.',
+        'Use session.open with canonical folders and optional discovery for scoped skills. Save sessionId and version. Minimal output returns identifiers and concurrency versions; format legacy restores metadata.',
       ].join(' '),
       inputSchema: ManageToolInputSchema,
-      outputSchema: LooseOutputSchema,
+      ...output,
     },
-    toolHandler((input) => {
+    toolHandler(async ({ format, ...input }) => {
       const { action, data } = ManageInputSchema.parse(input);
-      return registry.manage(action, data);
-    }),
+      const result = await registry.manage(action, data);
+      return format === 'legacy' ? result : minimalManage(action, result);
+    }, structuredOutput),
   );
 
   return server;
