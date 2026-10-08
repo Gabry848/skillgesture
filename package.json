@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "bench": "node benchmark/run.js",
+    "benchmark": "node benchmark/run.js"
   },
   "repository": {
     "type": "git",

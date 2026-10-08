@@ -1,8 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { SCHEMA_VERSION } from './store.js';
-import { fail } from './errors.js';
+import { errorPayload, fail } from './errors.js';
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const COMPACT_BYTE_BUDGET = 32 * 1024;
+const BATCH_BYTE_BUDGET = 1024 * 1024;
 
 function requireObject(value, name = 'data') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('INVALID_INPUT', `${name} must be an object`);
@@ -60,6 +62,93 @@ function findSubskill(catalog, groupId, skillId, subskillId) {
 
 function skillKey(groupId, skillId) {
   return `${groupId}/${skillId}`;
+}
+
+function indexVersion(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
+}
+
+function encodeCursor(value) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+function decodeCursor(cursor, expectedVersion) {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (
+      !value || typeof value !== 'object' || Array.isArray(value)
+      || value.v !== 1 || value.indexVersion !== expectedVersion
+      || !Number.isSafeInteger(value.offset) || value.offset < 0
+      || Object.keys(value).sort().join(',') !== 'indexVersion,offset,v'
+    ) throw new Error('invalid');
+    return value.offset;
+  } catch {
+    fail('INVALID_CURSOR', 'Cursor is invalid or does not match this discovery index');
+  }
+}
+
+function words(value) {
+  return value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function lexicalRank(group, skill, query) {
+  if (!query) return 0;
+  const normalized = query.toLowerCase();
+  const key = skillKey(group.id, skill.id);
+  const refs = [skill.id, key];
+  const names = [skill.name];
+  const descriptions = [skill.description, group.description];
+  for (const subskill of skill.subskills) {
+    refs.push(subskill.id, `${key}/${subskill.id}`);
+    names.push(subskill.name);
+    descriptions.push(subskill.description);
+  }
+  if (refs.some((ref) => ref.toLowerCase() === normalized)) return 0;
+  if (names.some((name) => name.toLowerCase().startsWith(normalized))) return 1;
+  if (refs.some((ref) => ref.toLowerCase().startsWith(normalized))) return 2;
+  const queryWords = words(normalized);
+  if (queryWords.length === 0) return Number.POSITIVE_INFINITY;
+  const nameWords = words(names.join(' '));
+  if (queryWords.every((word) => nameWords.some((candidate) => candidate.startsWith(word)))) return 3;
+  const descriptionWords = words(descriptions.join(' '));
+  if (queryWords.every((word) => descriptionWords.some((candidate) => candidate.startsWith(word)))) return 4;
+  return Number.POSITIVE_INFINITY;
+}
+
+function compactGroups(entries) {
+  const groups = [];
+  const byId = new Map();
+  for (const { group, skill } of entries) {
+    let projectedGroup = byId.get(group.id);
+    if (!projectedGroup) {
+      projectedGroup = {
+        ref: group.id,
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        skillCount: 0,
+        skills: [],
+      };
+      byId.set(group.id, projectedGroup);
+      groups.push(projectedGroup);
+    }
+    projectedGroup.skills.push({
+      ref: skillKey(group.id, skill.id),
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      scope: skill.scope,
+      subskillCount: skill.subskills.length,
+      subskills: skill.subskills.map((subskill) => ({
+        ref: `${skillKey(group.id, skill.id)}/${subskill.id}`,
+        id: subskill.id,
+        name: subskill.name,
+        description: subskill.description,
+      })),
+    });
+    projectedGroup.skillCount += 1;
+  }
+  return groups;
 }
 
 function normalizeRef(ref) {
@@ -135,7 +224,9 @@ export class SkillRegistry {
   async openSession(data) {
     if (data.sessionId !== undefined) {
       const session = await this.store.readSession(data.sessionId);
-      return { session, resumed: true };
+      const result = { session, resumed: true };
+      if (data.discovery !== undefined) result.discovery = await this.tree(session.sessionId, data.discovery);
+      return result;
     }
 
     const folders = await this.store.canonicalFolders(data.folders ?? []);
@@ -151,7 +242,9 @@ export class SkillRegistry {
       updatedAt: now,
     };
     await this.store.withLock(() => this.store.writeSession(session));
-    return { session, resumed: false };
+    const result = { session, resumed: false };
+    if (data.discovery !== undefined) result.discovery = await this.tree(session.sessionId, data.discovery);
+    return result;
   }
 
   async configureSession(data) {
@@ -367,22 +460,101 @@ export class SkillRegistry {
     });
   }
 
-  async tree(sessionId, includeDisabled = false) {
+  async tree(sessionId, rawOptions = {}) {
+    const options = typeof rawOptions === 'boolean' ? { includeDisabled: rawOptions } : rawOptions;
+    requireObject(options, 'options');
+    const format = options.format ?? 'legacy';
+    const includeDisabled = options.includeDisabled ?? false;
+    const limit = options.limit ?? 50;
     if (typeof includeDisabled !== 'boolean') fail('INVALID_INPUT', 'includeDisabled must be a boolean');
+    if (!['legacy', 'compact-v1'].includes(format)) fail('INVALID_INPUT', 'format must be legacy or compact-v1');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) fail('INVALID_INPUT', 'limit must be between 1 and 50');
+    if (format === 'legacy' && [options.query, options.groupId, options.cursor, options.knownIndexVersion].some((value) => value !== undefined)) {
+      fail('INVALID_INPUT', 'query, groupId, cursor, and knownIndexVersion require compact-v1');
+    }
+    const globalOnly = sessionId === undefined;
     const [session, catalog, associations] = await Promise.all([
-      this.store.readSession(sessionId),
+      globalOnly ? Promise.resolve({ sessionId: null, version: null, folders: [] }) : this.store.readSession(sessionId),
       this.store.readCatalog(),
       this.store.readAssociations(),
     ]);
-    const projection = this.#project(catalog, associations, session, includeDisabled);
-    return {
-      sessionId,
+    const effectiveIncludeDisabled = globalOnly ? false : includeDisabled;
+    const projection = this.#project(catalog, associations, session, effectiveIncludeDisabled);
+    const context = { scope: globalOnly ? 'global-only' : 'session', session: session.sessionId };
+    if (format === 'legacy') {
+      return {
+        sessionId: session.sessionId,
+        sessionVersion: session.version,
+        catalogRevision: catalog.revision,
+        associationsRevision: associations.revision,
+        folders: session.folders,
+        context,
+        groups: projection,
+      };
+    }
+
+    const query = options.query?.trim().toLowerCase();
+    const mode = {
+      format,
+      scope: context.scope,
+      sessionId: session.sessionId,
       sessionVersion: session.version,
       catalogRevision: catalog.revision,
       associationsRevision: associations.revision,
-      folders: session.folders,
-      groups: projection,
+      includeDisabled: effectiveIncludeDisabled,
+      groupId: options.groupId ?? null,
+      query: query ?? null,
     };
+    const currentIndexVersion = indexVersion(mode);
+    if (options.knownIndexVersion === currentIndexVersion && options.cursor === undefined) {
+      return { format, context, indexVersion: currentIndexVersion, notModified: true };
+    }
+    const offset = options.cursor === undefined ? 0 : decodeCursor(options.cursor, currentIndexVersion);
+    const entries = [];
+    let available = 0;
+    for (const group of projection) {
+      if (options.groupId !== undefined && group.id !== options.groupId) continue;
+      for (const skill of group.skills) {
+        available += 1;
+        const rank = lexicalRank(group, skill, query);
+        if (Number.isFinite(rank)) entries.push({ group, skill, rank });
+      }
+    }
+    if (query) {
+      entries.sort((left, right) => left.rank - right.rank
+        || skillKey(left.group.id, left.skill.id).localeCompare(skillKey(right.group.id, right.skill.id)));
+    }
+    if (offset > entries.length) fail('INVALID_CURSOR', 'Cursor offset is outside this discovery index');
+
+    const build = (selected, nextOffset) => {
+      const complete = nextOffset >= entries.length;
+      return {
+        format,
+        context,
+        indexVersion: currentIndexVersion,
+        notModified: false,
+        complete,
+        truncated: !complete,
+        counts: { matched: entries.length, returned: selected.length, available },
+        groups: compactGroups(selected),
+        ...(complete ? {} : {
+          nextCursor: encodeCursor({ v: 1, indexVersion: currentIndexVersion, offset: nextOffset }),
+          guidance: { action: 'continue', field: 'cursor' },
+        }),
+      };
+    };
+    const selected = [];
+    const pageEnd = Math.min(entries.length, offset + limit);
+    for (let position = offset; position < pageEnd; position += 1) {
+      const candidate = [...selected, entries[position]];
+      const payload = build(candidate, position + 1);
+      if (Buffer.byteLength(JSON.stringify(payload)) > COMPACT_BYTE_BUDGET) break;
+      selected.push(entries[position]);
+    }
+    if (selected.length === 0 && offset < entries.length) {
+      fail('DISCOVERY_ITEM_TOO_LARGE', `A compact skill exceeds the ${COMPACT_BYTE_BUDGET}-byte discovery budget`);
+    }
+    return build(selected, offset + selected.length);
   }
 
   async read(sessionId, rawRef) {
@@ -390,13 +562,18 @@ export class SkillRegistry {
     const requestedResourcePath = rawRef.resourcePath === undefined
       ? undefined
       : validateResourcePath(rawRef.resourcePath);
+    const globalOnly = sessionId === undefined;
     const [session, catalog, associations] = await Promise.all([
-      this.store.readSession(sessionId),
+      globalOnly ? Promise.resolve({ sessionId: null, version: null, folders: [] }) : this.store.readSession(sessionId),
       this.store.readCatalog(),
       this.store.readAssociations(),
     ]);
     const { group, skill } = findSkill(catalog, ref.groupId, ref.skillId);
-    const matchedFolders = this.#matchedFolders(associations, session, ref.groupId, ref.skillId);
+    if (globalOnly && !skill.global) {
+      fail('SESSION_REQUIRED', `Skill ${ref.groupId}/${ref.skillId} requires a session`);
+    }
+    const associationIndex = this.#indexAssociations(associations, session);
+    const matchedFolders = associationIndex.get(skillKey(ref.groupId, ref.skillId)) ?? [];
     const active = group.enabled && skill.enabled && (skill.global || matchedFolders.length > 0);
     if (!active) fail('SKILL_NOT_ACTIVE', `Skill ${ref.groupId}/${ref.skillId} is not active in this session`);
 
@@ -408,7 +585,8 @@ export class SkillRegistry {
       if (!node.enabled) fail('SKILL_NOT_ACTIVE', `Subskill ${ref.subskillId} is disabled`);
     }
     const common = {
-      sessionId,
+      sessionId: session.sessionId,
+      context: { scope: globalOnly ? 'global-only' : 'session', session: session.sessionId },
       catalogRevision: catalog.revision,
       kind,
       ref,
@@ -440,12 +618,41 @@ export class SkillRegistry {
     };
   }
 
+  async readMany(sessionId, items) {
+    if (!Array.isArray(items) || items.length < 1 || items.length > 8) {
+      fail('INVALID_INPUT', 'items must contain between 1 and 8 reads');
+    }
+    const context = { scope: sessionId === undefined ? 'global-only' : 'session', session: sessionId ?? null };
+    const results = [];
+    for (const item of items) {
+      let candidate;
+      try {
+        const { context: ignoredContext, sessionId: ignoredSessionId, ...value } = await this.read(sessionId, item);
+        candidate = { ok: true, ...value };
+      } catch (error) {
+        candidate = errorPayload(error);
+      }
+      if (Buffer.byteLength(JSON.stringify({ context, items: [...results, candidate] })) > BATCH_BYTE_BUDGET - 4096) {
+        candidate = {
+          ok: false,
+          error: {
+            code: 'RESPONSE_TOO_LARGE',
+            message: `Item exceeds the ${BATCH_BYTE_BUDGET}-byte batch response budget; request it separately`,
+          },
+        };
+      }
+      results.push(candidate);
+    }
+    return { context, items: results };
+  }
+
   #project(catalog, associations, session, includeDisabled) {
     const groups = [];
+    const associationIndex = this.#indexAssociations(associations, session);
     for (const group of catalog.groups) {
       const skills = [];
       for (const skill of group.skills) {
-        const matchedFolders = this.#matchedFolders(associations, session, group.id, skill.id);
+        const matchedFolders = associationIndex.get(skillKey(group.id, skill.id)) ?? [];
         const applicable = skill.global || matchedFolders.length > 0;
         if (!applicable) continue;
         const active = group.enabled && skill.enabled;
@@ -485,9 +692,16 @@ export class SkillRegistry {
     return groups;
   }
 
-  #matchedFolders(associations, session, groupId, skillId) {
-    const key = skillKey(groupId, skillId);
-    return session.folders.filter((folder) => associations.folders[folder]?.includes(key));
+  #indexAssociations(associations, session) {
+    const index = new Map();
+    for (const folder of session.folders) {
+      for (const key of associations.folders[folder] ?? []) {
+        const matched = index.get(key);
+        if (matched) matched.push(folder);
+        else index.set(key, [folder]);
+      }
+    }
+    return index;
   }
 
   async #mutateCatalog(mutator) {

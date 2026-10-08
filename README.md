@@ -64,74 +64,57 @@ SKILLGESTURE_HOME=/alternative/path npm start
 
 ### `skill_manage`
 
-Manages sessions, the catalog, and associations. The available actions are:
-
-- `session.open`
-- `session.configure`
-- `session.list`
-- `group.upsert`
-- `skill.upsert`
-- `subskill.upsert`
-- `node.setEnabled`
-- `association.set`
+Manages sessions, the catalog, and associations through `session.open`, `session.configure`, `session.list`, `group.upsert`, `skill.upsert`, `subskill.upsert`, `node.setEnabled`, and `association.set`. `session.open` can include a `discovery` object and return compact discovery in the same round trip.
 
 ### `skill_tree`
 
-Returns the lightweight tree of skills applicable to a session. It includes metadata and provenance, but not Markdown content.
+Returns metadata only; Markdown bodies are never included. `sessionId` is optional:
+
+- without it, only enabled global skills and their enabled subskills are visible;
+- with it, global skills are unioned with skills associated with the session's exact canonical folders;
+- `format: "legacy"` is the default and preserves the original fields and hierarchy;
+- `format: "compact-v1"` removes administrative fields and adds bounded search, pagination, byte-budget truncation, and change detection.
+
+Compact discovery accepts `query`, `groupId`, `limit` (1–50), `cursor`, and `knownIndexVersion`. Ranking is deterministic: exact ID/ref, name prefix, ref prefix, name tokens, description tokens, then stable skill ref. Compact responses are limited to 32 KiB of serialized JSON and expose counts plus explicit completeness. A response with `truncated: true` always includes `nextCursor` and structured continuation guidance. Reusing the same valid `indexVersion` as `knownIndexVersion` returns a small `notModified` response. Cursors are opaque and valid only for the same session/catalog/association revisions and request mode.
 
 ### `skill_read`
 
-Reads the Markdown of a single active skill or subskill on demand. If the skill contains imported supporting files, the first read also returns their `resources` index. Passing one of those paths as `resourcePath` reads only that resource without loading the entire bundle into the context.
+Reads one active skill, subskill, or bundled resource, or accepts an `items` array of 1–8 reads. Batch results preserve input order and contain independent `ok`/`error` statuses, so one failure does not discard successful reads. Batch output has a deterministic 1 MiB safety cap; an item that would exceed it receives `RESPONSE_TOO_LARGE` and can be requested separately.
+
+Without `sessionId`, only enabled global content is readable. A folder-scoped parent returns `SESSION_REQUIRED`; subskills inherit the parent's scope. Reading Markdown returns a resource index. Supplying `resourcePath` loads only that safe relative resource. Text resources are UTF-8 and binary resources are Base64.
 
 ## Recommended Agent Workflow
 
-### 1. Create a Session
+### 1. Discover Globals Without a Session
 
-Each agent creates a session once:
+Agents that only need global instructions can skip session creation:
+
+```json
+{ "format": "compact-v1", "query": "version control", "limit": 10 }
+```
+
+The response context is `{ "scope": "global-only", "session": null }`.
+
+### 2. Open a Scoped Session and Discover in One Turn
 
 ```json
 {
   "action": "session.open",
   "data": {
     "label": "coding-agent",
-    "folders": [
-      "/Users/example/projects/api",
-      "/Users/example/projects/shared"
-    ]
+    "folders": ["/Users/example/projects/api"],
+    "discovery": {
+      "format": "compact-v1",
+      "query": "testing",
+      "limit": 10
+    }
   }
 }
 ```
 
-The response contains a UUID:
+Persist the returned `session.sessionId`. To resume, call `session.open` with that `sessionId`; an unknown ID never creates a replacement session implicitly. The same optional `discovery` object works when resuming.
 
-```json
-{
-  "ok": true,
-  "session": {
-    "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac"
-  },
-  "resumed": false
-}
-```
-
-The agent must retain and reuse this `sessionId`.
-
-### 2. Resume a Session
-
-After restarting the server:
-
-```json
-{
-  "action": "session.open",
-  "data": {
-    "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac"
-  }
-}
-```
-
-An unknown ID does not implicitly create a new session.
-
-### 3. Update the Session Folders
+### 3. Keep Session Folders Current
 
 ```json
 {
@@ -146,7 +129,11 @@ An unknown ID does not implicitly create a new session.
 
 `mode` can be `replace`, `add`, or `remove`.
 
-### 4. View the Index
+### 4. Continue or Revalidate Compact Discovery
+
+Pass `nextCursor` back as `cursor` until `complete` is true. On a later turn, pass the previous `indexVersion` as `knownIndexVersion`; if the effective index is unchanged, the server returns `notModified: true` without repeating the tree. Do not send search, cursor, or version fields with legacy format.
+
+Legacy clients can continue using:
 
 ```json
 {
@@ -155,7 +142,9 @@ An unknown ID does not implicitly create a new session.
 }
 ```
 
-### 5. Read a Skill on Demand
+### 5. Read One or Several Results
+
+Single read:
 
 ```json
 {
@@ -166,20 +155,19 @@ An unknown ID does not implicitly create a new session.
 }
 ```
 
-`subskillId` is optional.
-
-To read a resource listed in the previous response:
+Batch read:
 
 ```json
 {
   "sessionId": "6de1fdba-aec8-4dc7-b03c-1e21e1ae58ac",
-  "groupId": "coding",
-  "skillId": "nodejs",
-  "resourcePath": "references/testing.md"
+  "items": [
+    { "groupId": "coding", "skillId": "nodejs" },
+    { "groupId": "coding", "skillId": "git", "resourcePath": "references/rebase.md" }
+  ]
 }
 ```
 
-Text resources are returned as UTF-8; binary resources are returned as Base64.
+The single-item fields and `items` are mutually exclusive.
 
 ## Creating the Catalog
 
@@ -288,7 +276,9 @@ Disabling a group disables all its descendant skills. Disabling a skill also mak
 
 ## Concurrency and Versions
 
-Multiple MCP processes can use the same repository. Sessions are stored separately, and mutations are serialized through a cross-process lock.
+Multiple MCP processes can use the same repository. Sessions are stored separately, mutations are serialized through a cross-process lock, and JSON replacement is atomic.
+
+Validated catalogs, associations, and sessions use a read-through cache. Every cache hit first compares filesystem identity and high-resolution stat metadata, so another process's atomic replacement is observed. Same-process writes invalidate immediately, callers receive isolated clones, and metadata/cache failures fall back to authoritative disk reads instead of stale authorization data.
 
 Update operations accept `expectedVersion`; `association.set` accepts `expectedRevision`. If another agent has already changed the data, Skillgesture returns `VERSION_CONFLICT` instead of silently overwriting the change.
 
@@ -317,13 +307,38 @@ Update operations accept `expectedVersion`; `association.set` accepts `expectedR
 
 Markdown versions are immutable. The catalog points to the active version, preventing reads from observing partially updated content.
 
-## Tests
+## Tests and Benchmarks
 
 ```bash
 npm test
+npm run benchmark
 ```
 
-Tests use temporary directories and do not modify `~/.skillgesture`.
+The benchmark deterministically generates temporary catalogs with 10, 100, 1,000, and 10,000 skills. It reports legacy/compact/search/not-modified serialized bytes, `ceil(bytes / 4)` estimated tokens, cold/warm discovery/search/read latency, heap deltas, and measured MCP/registry call counts for loading 1, 3, and 8 skills. Timings and heap figures are informational, never CI assertions.
+
+For a quick smoke run:
+
+```bash
+npm run benchmark -- --sizes=10,100
+```
+
+Tests and benchmarks use temporary directories and do not modify `~/.skillgesture`.
+
+### Benchmark commands
+
+Run the deterministic benchmark across 10, 100, 1,000, and 10,000 generated skills:
+
+```bash
+npm run bench
+```
+
+For a quick 10/100-skill smoke run:
+
+```bash
+npm run bench -- --smoke
+```
+
+The benchmark reports serialized bytes, estimated tokens, compact-versus-legacy reduction, discovery/search/read latency, and individual-versus-batch call counts. Latency measurements are informational and are not used as flaky CI assertions.
 
 ## License
 

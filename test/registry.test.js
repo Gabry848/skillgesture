@@ -76,6 +76,46 @@ test('builds a lightweight tree and reads Markdown only on demand', async (t) =>
   assert.deepEqual(read.matchedFolders, [folderA]);
 });
 
+test('supports enabled globals without a session and requires sessions for scoped content', async (t) => {
+  const { registry, folderA } = await fixture(t);
+  await seed(registry, folderA);
+  await registry.manage('subskill.upsert', {
+    groupId: 'coding',
+    skillId: 'git',
+    id: 'advanced',
+    name: 'Advanced Git',
+    markdown: '# Advanced Git',
+    resources: [{ path: 'reference.md', content: 'global reference' }],
+  });
+
+  const tree = await registry.tree();
+  assert.deepEqual(tree.context, { scope: 'global-only', session: null });
+  assert.equal(tree.sessionId, null);
+  assert.deepEqual(tree.groups[0].skills.map((skill) => skill.id), ['git']);
+  assert.deepEqual(tree.groups[0].skills[0].subskills.map((subskill) => subskill.id), ['advanced']);
+
+  const read = await registry.read(undefined, { groupId: 'coding', skillId: 'git', subskillId: 'advanced' });
+  assert.equal(read.sessionId, null);
+  assert.match(read.markdown, /Advanced Git/);
+  const resource = await registry.read(undefined, {
+    groupId: 'coding', skillId: 'git', subskillId: 'advanced', resourcePath: 'reference.md',
+  });
+  assert.equal(resource.resource.content, 'global reference');
+
+  await assert.rejects(
+    registry.read(undefined, { groupId: 'coding', skillId: 'node' }),
+    (error) => error.code === 'SESSION_REQUIRED',
+  );
+  await registry.manage('node.setEnabled', {
+    ref: { groupId: 'coding', skillId: 'git' }, enabled: false,
+  });
+  assert.deepEqual((await registry.tree(undefined, true)).groups, []);
+  await assert.rejects(
+    registry.read(undefined, { groupId: 'coding', skillId: 'git' }),
+    (error) => error.code === 'SKILL_NOT_ACTIVE',
+  );
+});
+
 test('uses exact folder matching and unions multiple folder scopes', async (t) => {
   const { registry, folderA, folderB, nested } = await fixture(t);
   await seed(registry, folderA);

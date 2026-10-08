@@ -34,27 +34,24 @@ export function createMcpServer(registry) {
     'skill_tree',
     {
       title: 'List active skill tree',
-      description: 'Return a lightweight group → skill → subskill index for a durable session. Markdown bodies are never included.',
+      description: 'Discover skill metadata without Markdown. Sessionless calls expose enabled globals. Legacy is default; compact-v1 adds bounded lexical search, cursors, truncation status, and notModified checks.',
       inputSchema: TreeInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ sessionId, includeDisabled }) => registry.tree(sessionId, includeDisabled)),
+    toolHandler(({ sessionId, ...options }) => registry.tree(sessionId, options)),
   );
 
   server.registerTool(
     'skill_read',
     {
-      title: 'Read one active skill',
-      description: 'Load one Markdown skill body or one bundled supporting resource on demand. The skill must be enabled and active for the session.',
+      title: 'Read active skills',
+      description: 'Load one or up to eight Markdown skill bodies or bundled resources. Batches preserve order with per-item status. Sessionless reads permit enabled global content only.',
       inputSchema: ReadInputSchema,
       outputSchema: LooseOutputSchema,
     },
-    toolHandler(({ sessionId, groupId, skillId, subskillId, resourcePath }) => registry.read(sessionId, {
-      groupId,
-      skillId,
-      ...(subskillId === undefined ? {} : { subskillId }),
-      ...(resourcePath === undefined ? {} : { resourcePath }),
-    })),
+    toolHandler(({ sessionId, items, ...item }) => (
+      items === undefined ? registry.read(sessionId, item) : registry.readMany(sessionId, items)
+    )),
   );
 
   server.registerTool(
@@ -64,7 +61,7 @@ export function createMcpServer(registry) {
       description: [
         'Create/resume/configure durable sessions and manage the central skill catalog.',
         'Actions: session.open, session.configure, session.list, group.upsert, skill.upsert, subskill.upsert, node.setEnabled, association.set.',
-        'Use session.open without sessionId once, persist its returned UUID, then reuse it in skill_tree and skill_read. Folder associations use exact canonical paths.',
+        'Sessionless discovery/read supports globals. Use session.open for exact canonical-folder scope and optionally include compact discovery in the same response. Persist returned session IDs.',
       ].join(' '),
       inputSchema: ManageToolInputSchema,
       outputSchema: LooseOutputSchema,

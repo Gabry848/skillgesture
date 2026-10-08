@@ -28,6 +28,7 @@ export class JsonStore {
     this.sessionsRoot = path.join(this.root, 'sessions');
     this.catalogPath = path.join(this.root, 'catalog.json');
     this.associationsPath = path.join(this.root, 'associations.json');
+    this.cache = new Map();
   }
 
   async initialize() {
@@ -83,11 +84,34 @@ export class JsonStore {
     }
   }
 
+  async #fileIdentity(filePath) {
+    const metadata = await stat(filePath, { bigint: true });
+    return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs].join(':');
+  }
+
   async #parseStored(filePath, schema, identityCheck) {
+    let identity;
+    try {
+      identity = await this.#fileIdentity(filePath);
+      const cached = this.cache.get(filePath);
+      if (cached?.identity === identity) return structuredClone(cached.value);
+    } catch {
+      // Metadata is only an optimization. The disk read below remains authoritative.
+    }
+
     const value = await this.readJson(filePath);
     const parsed = schema.safeParse(value);
     if (!parsed.success || (identityCheck && !identityCheck(parsed.data))) {
       fail('STORE_CORRUPT', `Invalid stored data in ${path.basename(filePath)}`);
+    }
+    if (identity !== undefined) {
+      try {
+        if (await this.#fileIdentity(filePath) === identity) {
+          this.cache.set(filePath, { identity, value: structuredClone(parsed.data) });
+        }
+      } catch {
+        // A concurrent replacement simply leaves this read uncached.
+      }
     }
     return parsed.data;
   }
@@ -112,6 +136,7 @@ export class JsonStore {
       await handle.close();
       handle = undefined;
       await rename(temporaryPath, filePath);
+      this.cache.delete(filePath);
       await this.#syncDirectory(directory);
     } catch (error) {
       await handle?.close().catch(() => {});

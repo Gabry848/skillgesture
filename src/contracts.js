@@ -77,18 +77,38 @@ const SkillRefSchema = z.strictObject({ groupId: IdSchema, skillId: IdSchema });
 const SubskillRefSchema = z.strictObject({ groupId: IdSchema, skillId: IdSchema, subskillId: IdSchema });
 export const NodeRefSchema = z.union([SubskillRefSchema, SkillRefSchema, GroupRefSchema]);
 
-export const TreeInputSchema = z.strictObject({
-  sessionId: SessionIdSchema.describe('Durable session UUID returned by skill_manage session.open'),
+const DiscoveryInputShape = {
+  format: z.enum(['legacy', 'compact-v1']).optional().default('legacy'),
   includeDisabled: z.boolean().optional().default(false),
+  query: z.string().trim().min(1).max(200).optional(),
+  groupId: IdSchema.optional(),
+  limit: z.number().int().min(1).max(50).optional().default(50),
+  cursor: z.string().min(1).max(2048).optional(),
+  knownIndexVersion: z.string().regex(/^[a-f0-9]{24}$/).optional(),
+};
+
+export const TreeInputSchema = z.strictObject({
+  sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
+  ...DiscoveryInputShape,
 });
 
-export const ReadInputSchema = z.strictObject({
-  sessionId: SessionIdSchema.describe('Durable session UUID returned by skill_manage session.open'),
+const ReadItemSchema = z.strictObject({
   groupId: IdSchema,
   skillId: IdSchema,
   subskillId: IdSchema.optional(),
   resourcePath: z.string().min(1).optional().describe('Optional bundled resource path returned by an earlier skill_read call'),
 });
+
+export const ReadInputSchema = z.union([
+  z.strictObject({
+    sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
+    ...ReadItemSchema.shape,
+  }),
+  z.strictObject({
+    sessionId: SessionIdSchema.optional().describe('Optional durable session UUID; omit for enabled global skills only'),
+    items: z.array(ReadItemSchema).min(1).max(8),
+  }),
+]);
 
 const InputResourceSchema = z.strictObject({
   path: z.string().min(1).max(240),
@@ -119,6 +139,7 @@ export const ManageInputSchema = z.discriminatedUnion('action', [
       sessionId: SessionIdSchema.optional(),
       label: z.string().max(120).optional(),
       folders: z.array(FolderSchema).optional(),
+      discovery: z.strictObject(DiscoveryInputShape).optional(),
     }).optional().default({}),
   }),
   z.strictObject({
