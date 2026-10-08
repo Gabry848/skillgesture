@@ -6,12 +6,12 @@ import { SkillRegistry } from './registry.js';
 import { createMcpServer } from './server.js';
 import { JsonStore } from './store.js';
 
-export async function main({ root } = {}) {
+export async function main({ root, structuredOutput = process.env.SKILLGESTURE_STRUCTURED_OUTPUT === '1' } = {}) {
   const store = new JsonStore(root);
   const registry = new SkillRegistry(store);
   await registry.initialize();
 
-  const server = createMcpServer(registry);
+  const server = createMcpServer(registry, { structuredOutput });
   await server.connect(new StdioServerTransport());
   console.error(`Skillgesture MCP server ready; storage: ${store.root}`);
   return server;

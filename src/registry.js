@@ -151,6 +151,22 @@ function compactGroups(entries) {
   return groups;
 }
 
+function minimalSkills(entries) {
+  const describe = (node, ref) => ({
+    ref,
+    ...(node.name === node.id ? {} : { name: node.name }),
+    ...(node.description ? { description: node.description } : {}),
+    ...(node.enabled ? {} : { enabled: false }),
+  });
+  return entries.map(({ group, skill }) => ({
+    ...describe(skill, skillKey(group.id, skill.id)),
+    ...(skill.scope === 'folder' ? { scope: 'folder' } : {}),
+    ...(skill.subskills.length === 0 ? {} : {
+      subskills: skill.subskills.map((node) => describe(node, `${skillKey(group.id, skill.id)}/${node.id}`)),
+    }),
+  }));
+}
+
 function normalizeRef(ref) {
   requireObject(ref, 'ref');
   return {
@@ -467,10 +483,10 @@ export class SkillRegistry {
     const includeDisabled = options.includeDisabled ?? false;
     const limit = options.limit ?? 50;
     if (typeof includeDisabled !== 'boolean') fail('INVALID_INPUT', 'includeDisabled must be a boolean');
-    if (!['legacy', 'compact-v1'].includes(format)) fail('INVALID_INPUT', 'format must be legacy or compact-v1');
+    if (!['legacy', 'compact-v1', 'compact-v2'].includes(format)) fail('INVALID_INPUT', 'format must be legacy, compact-v1 or compact-v2');
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) fail('INVALID_INPUT', 'limit must be between 1 and 50');
     if (format === 'legacy' && [options.query, options.groupId, options.cursor, options.knownIndexVersion].some((value) => value !== undefined)) {
-      fail('INVALID_INPUT', 'query, groupId, cursor, and knownIndexVersion require compact-v1');
+      fail('INVALID_INPUT', 'query, groupId, cursor, and knownIndexVersion require a compact format');
     }
     const globalOnly = sessionId === undefined;
     const [session, catalog, associations] = await Promise.all([
@@ -507,6 +523,7 @@ export class SkillRegistry {
     };
     const currentIndexVersion = indexVersion(mode);
     if (options.knownIndexVersion === currentIndexVersion && options.cursor === undefined) {
+      if (format === 'compact-v2') return { indexVersion: currentIndexVersion, notModified: true };
       return { format, context, indexVersion: currentIndexVersion, notModified: true };
     }
     const offset = options.cursor === undefined ? 0 : decodeCursor(options.cursor, currentIndexVersion);
@@ -528,6 +545,16 @@ export class SkillRegistry {
 
     const build = (selected, nextOffset) => {
       const complete = nextOffset >= entries.length;
+      if (format === 'compact-v2') {
+        return {
+          indexVersion: currentIndexVersion,
+          truncated: !complete,
+          skills: minimalSkills(selected),
+          ...(complete ? {} : {
+            nextCursor: encodeCursor({ v: 1, indexVersion: currentIndexVersion, offset: nextOffset }),
+          }),
+        };
+      }
       return {
         format,
         context,
