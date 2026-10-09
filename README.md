@@ -16,6 +16,9 @@ Call this through `skill_context`, save the returned `sessionId` and `version`, 
 | --- | --- | --- |
 | `/mcp` | `skill_categories`, `skill_tree`, `skill_read`, `skill_context` | Any valid agent token |
 | `/mcp/admin` | The four runtime tools plus `category_manage`, `skill_manage`, `resource_manage` | Admin token |
+| `/api/admin/overview` | Account identity, catalog revision and current counts | Admin token, GET |
+| `/api/admin/activity` | Filtered catalog audit, newest first | Admin token, GET |
+| `/api/admin/content` | Current Markdown or a bundled resource, including inactive items | Admin token, GET |
 
 Each request requires `Authorization: Bearer <agent-token>`. Tokens expire, can be revoked, and are stored only as hashes. Each token identifies an account and an agent. Different accounts have separate catalogs; sessions belong to their account and agent. Rotating a token with the same identity preserves access to that agent’s sessions.
 

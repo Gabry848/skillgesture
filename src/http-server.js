@@ -3,6 +3,8 @@ import https from 'node:https';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CloudRegistry } from './cloud-registry.js';
 import { createCloudMcpServer } from './cloud-server.js';
+import { AdminQueries } from './admin-queries.js';
+import { SkillgestureError } from './errors.js';
 
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -43,7 +45,8 @@ export function createHttpServer({ store, publicUrl, tls, trustProxy = false,
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); return;
       }
       const path = req.url?.split('?')[0];
-      if (!['/mcp', '/mcp/admin'].includes(path) || req.url !== path) return reply(res, 404, 'NOT_FOUND');
+      const adminRead = ['/api/admin/overview', '/api/admin/activity', '/api/admin/content'].includes(path);
+      if (!adminRead && (!['/mcp', '/mcp/admin'].includes(path) || req.url !== path)) return reply(res, 404, 'NOT_FOUND');
       const expectedHost = url.port === '0' && LOOPBACK_HOSTS.has(url.hostname)
         ? `${url.hostname}:${server.address().port}` : url.host;
       if (req.headers.host !== expectedHost) return reply(res, 403, 'INVALID_HOST');
@@ -56,17 +59,29 @@ export function createHttpServer({ store, publicUrl, tls, trustProxy = false,
         res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
         res.setHeader('Vary', 'Origin');
         res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, MCP-Protocol-Version');
-        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Methods', adminRead ? 'GET, OPTIONS' : 'POST, OPTIONS');
       }
       if (req.method === 'OPTIONS') {
-        if (!req.headers.origin) return reply(res, 405, 'METHOD_NOT_ALLOWED', { Allow: 'POST' });
+        if (!req.headers.origin) return reply(res, 405, 'METHOD_NOT_ALLOWED', { Allow: adminRead ? 'GET' : 'POST' });
         res.writeHead(204); res.end(); return;
       }
       const match = /^Bearer (sg_[A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization ?? '');
       const principal = match ? await store.authenticate(match[1]) : null;
       if (!principal) return reply(res, 401, 'UNAUTHORIZED', { 'WWW-Authenticate': 'Bearer realm="skillgesture"' });
-      const admin = path === '/mcp/admin';
+      const admin = path === '/mcp/admin' || adminRead;
       if (admin && !principal.admin) return reply(res, 403, 'FORBIDDEN');
+      if (adminRead) {
+        if (req.method !== 'GET') return reply(res, 405, 'METHOD_NOT_ALLOWED', { Allow: 'GET' });
+        const params = new URL(req.url, publicUrl).searchParams;
+        const keys = path.endsWith('/overview') ? [] : path.endsWith('/activity')
+          ? ['agent', 'operation', 'ref', 'limit', 'cursor'] : ['ref', 'resourcePath'];
+        if ([...params.keys()].some((key) => !keys.includes(key) || params.getAll(key).length !== 1)) {
+          return reply(res, 400, 'INVALID_INPUT');
+        }
+        const queries = new AdminQueries(store, principal);
+        const result = await queries[path.split('/').at(-1)](Object.fromEntries(params));
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result)); return;
+      }
       if (req.method !== 'POST') return reply(res, 405, 'METHOD_NOT_ALLOWED', { Allow: 'POST' });
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) return reply(res, 415, 'UNSUPPORTED_MEDIA_TYPE');
       const { body, invalid, tooLarge } = await readBody(req);
@@ -80,8 +95,12 @@ export function createHttpServer({ store, publicUrl, tls, trustProxy = false,
       await mcpServer.connect(transport);
       // Transport instances are request-local; agent sessions live in Postgres.
       await transport.handleRequest(req, res, body);
-    } catch {
-      if (!res.headersSent) reply(res, 503, 'SERVICE_UNAVAILABLE');
+    } catch (error) {
+      if (!res.headersSent) {
+        const status = error.name === 'ZodError' ? 400 : error instanceof SkillgestureError
+          ? ({ FORBIDDEN: 403, UNAUTHORIZED: 401, SKILL_NOT_FOUND: 404, RESOURCE_NOT_FOUND: 404 }[error.code] ?? 400) : 503;
+        reply(res, status, error.name === 'ZodError' ? 'INVALID_INPUT' : error instanceof SkillgestureError ? error.code : 'SERVICE_UNAVAILABLE');
+      }
       else if (!res.writableEnded) res.end();
     } finally { await mcpServer?.close().catch(() => {}); }
   };
