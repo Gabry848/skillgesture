@@ -1,0 +1,136 @@
+name: Deploy SkillGesture to Azure
+
+# Deliberately manual: pushes and PR updates never publish unfinished work.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character commit SHA already merged into main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skillgesture-azure-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ inputs.commit }}
+    steps:
+      - name: Validate the immutable release reference
+        shell: bash
+        run: '[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the release commit to belong to main
+        run: git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: node --test deploy/azure/bootstrap.test.mjs
+      - run: npm run dashboard:install
+      - run: npm run dashboard:typecheck
+      - run: npm run dashboard:test
+      - run: npm run dashboard:build
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_SHA: ${{ inputs.commit }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+      AZURE_KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
+      AZURE_STATIC_WEB_APP_NAME: ${{ vars.AZURE_STATIC_WEB_APP_NAME }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Sign in with the dedicated Azure identity
+        uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and publish the backend image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry_server="$(az acr show --name "$AZURE_REGISTRY_NAME" --query loginServer --output tsv)"
+          if ! digest="$(az acr repository show --name "$AZURE_REGISTRY_NAME" --image "skillgesture:$RELEASE_SHA" --query digest --output tsv 2>/dev/null)"; then
+            az acr login --name "$AZURE_REGISTRY_NAME"
+            docker build --platform linux/amd64 --file deploy/azure/Dockerfile --label "org.opencontainers.image.revision=$RELEASE_SHA" --tag "$registry_server/skillgesture:$RELEASE_SHA" .
+            docker push "$registry_server/skillgesture:$RELEASE_SHA"
+            digest="$(az acr repository show --name "$AZURE_REGISTRY_NAME" --image "skillgesture:$RELEASE_SHA" --query digest --output tsv)"
+          fi
+          az acr repository update --name "$AZURE_REGISTRY_NAME" --image "skillgesture:$RELEASE_SHA" --write-enabled false --delete-enabled false --output none
+          echo "image=$registry_server/skillgesture@$digest" >> "$GITHUB_OUTPUT"
+      - name: Deploy the digest-pinned backend and operator job
+        env:
+          RELEASE_IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          node deploy/azure/deploy.mjs \
+            --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --registry "$AZURE_REGISTRY_NAME" \
+            --vault "$AZURE_KEY_VAULT_NAME" \
+            --commit "$RELEASE_SHA" --image "$RELEASE_IMAGE"
+      - run: npm run dashboard:install
+      - run: npm run dashboard:build
+      - name: Retrieve and mask the dashboard deployment credential
+        id: dashboard-token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(az staticwebapp secrets list --name "$AZURE_STATIC_WEB_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query properties.apiKey --output tsv)"
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - name: Publish the dashboard build
+        uses: Azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1 # v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.dashboard-token.outputs.token }}
+          action: upload
+          app_location: dashboard/dist
+          output_location: ''
+          skip_app_build: true
+          skip_api_build: true
+          production_branch: main
+      - name: Verify HTTPS, database readiness, token enforcement and dashboard CORS
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://$(az resource show --resource-group "$AZURE_RESOURCE_GROUP" --resource-type Microsoft.App/containerApps --name skillgesture-api --query properties.configuration.ingress.fqdn --output tsv)/mcp"
+          dashboard="https://$(az staticwebapp show --name "$AZURE_STATIC_WEB_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query defaultHostname --output tsv)"
+          node deploy/azure/verify.mjs --api "$api" --dashboard "$dashboard"
+          {
+            echo "Published commit: $RELEASE_SHA"
+            echo "MCP: $api"
+            echo "Console: $dashboard"
+          } >> "$GITHUB_STEP_SUMMARY"
