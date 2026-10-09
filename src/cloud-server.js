@@ -27,7 +27,7 @@ export function createCloudMcpServer(registry, { admin = false, structuredOutput
   register('skill_context', 'Open/resume, configure, list or close this agent’s durable sessions. Save sessionId and version; updates require expectedVersion. Open/configure can include discovery.', ContextInput, 'context', false);
   if (admin) {
     register('category_manage', 'List/get or upsert/delete/restore categories. default controls preloading; enabled controls availability. Existing categories require expectedVersion. Deletion is reversible.', CategoryManageInput, 'categoryManage', false);
-    register('skill_manage', 'List/get metadata or upsert/delete/restore skills and subskills by category/skill[/subskill] ref. Existing nodes require expectedVersion. Deletion is reversible; responses omit bodies.', SkillManageInput, 'skillManage', false);
+    register('skill_manage', 'List/get metadata or upsert/delete/restore skills and subskills by category/skill[/subskill] ref. Upsert with previousRef moves an existing skill and its subskills to ref. Existing nodes require expectedVersion. Deletion is reversible; responses omit bodies.', SkillManageInput, 'skillManage', false);
     register('resource_manage', 'Upsert or delete one bundled resource without resending the bundle. Requires the parent node’s expectedVersion; returns its new version. Binary contents use Base64.', ResourceManageInput, 'resourceManage', false);
   }
   return server;

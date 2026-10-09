@@ -35,6 +35,7 @@ test('HTTP MCP exposes four runtime tools and seven admin tools with discoverabl
   assert.deepEqual(runtime.tools.map((tool) => tool.name), ['skill_categories', 'skill_tree', 'skill_read', 'skill_context']);
   const listed = await admin.listTools();
   assert.equal(listed.tools.length, 7);
+  assert.ok(listed.tools.find((tool) => tool.name === 'skill_manage').inputSchema.properties.previousRef);
   const read = runtime.tools.find((tool) => tool.name === 'skill_read');
   assert.ok(read.inputSchema.properties.ref);
   assert.ok(read.inputSchema.properties.items.items.properties.resourcePath);
@@ -53,6 +54,10 @@ test('HTTP MCP exposes four runtime tools and seven admin tools with discoverabl
   assert.equal(inspected.skill.version, 1);
   const written = value(await admin.callTool({ name: 'skill_manage', arguments: { action: 'upsert', ref: 'general/git', markdown: '# Updated', expectedVersion: 1 } }));
   assert.deepEqual(written, { ok: true, version: 2 });
+  const moved = value(await admin.callTool({ name: 'skill_manage', arguments: { action: 'upsert', previousRef: 'general/git', ref: 'general/source-control', expectedVersion: 2 } }));
+  assert.deepEqual(moved, { ok: true, version: 3 });
+  assert.equal(value(await reader.callTool({ name: 'skill_read', arguments: { ref: 'general/source-control' } })).markdown, '# Updated');
+  assert.equal(value(await reader.callTool({ name: 'skill_read', arguments: { ref: 'general/git' } })).error.code, 'SKILL_NOT_ACTIVE');
 });
 
 test('every HTTP request authenticates, including tools/list; expiry and revocation affect connected clients', async (t) => {

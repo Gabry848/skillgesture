@@ -59,6 +59,7 @@ export const CategoryManageInput = z.strictObject({
 export const SkillManageInput = z.strictObject({
   action: z.enum(['list', 'get', 'upsert', 'delete', 'restore']),
   ref: Ref.optional(),
+  previousRef: Ref.optional().describe('For upsert, move this existing skill to ref while preserving its history and subskills'),
   categoryId: IdSchema.optional(),
   name: Name.optional(),
   description: Description.optional(),

@@ -16,6 +16,10 @@ Call this through `skill_context`, save the returned `sessionId` and `version`, 
 | --- | --- | --- |
 | `/mcp` | `skill_categories`, `skill_tree`, `skill_read`, `skill_context` | Any valid agent token |
 | `/mcp/admin` | The four runtime tools plus `category_manage`, `skill_manage`, `resource_manage` | Admin token |
+| `/api/admin/overview` | Account identity, catalog revision and current counts | Admin token, GET |
+| `/api/admin/catalog` | Filtered catalog pages, category names and skill counts | Admin token, GET |
+| `/api/admin/activity` | Filtered catalog audit, newest first | Admin token, GET |
+| `/api/admin/content` | Current Markdown or a bundled resource, including inactive items | Admin token, GET |
 
 Each request requires `Authorization: Bearer <agent-token>`. Tokens expire, can be revoked, and are stored only as hashes. Each token identifies an account and an agent. Different accounts have separate catalogs; sessions belong to their account and agent. Rotating a token with the same identity preserves access to that agent’s sessions.
 
@@ -65,6 +69,19 @@ Supply settings through the environment or a secret manager; `.env.example` docu
 For local development only, `PUBLIC_URL=http://127.0.0.1:8080/mcp` with `ALLOW_INSECURE_LOCALHOST=1` enables HTTP on loopback. Production MCP requests require HTTPS. `/health` reports database readiness without returning deployment details.
 
 The MCP HTTP transport is request-local and returns JSON. Durable **agent sessions are stored in Postgres**, independent of transport connections and server restarts.
+
+## Dashboard
+
+Manage categories, skills, subskills and bundled resources in the separate dark Coss UI console. Inspect the catalog audit and current inactive content with an admin token.
+
+```sh
+npm run dashboard:install
+ALLOWED_ORIGINS=http://127.0.0.1:5173 ./start.sh
+# In a second terminal:
+npm run dashboard:dev
+```
+
+Open `http://127.0.0.1:5173` and connect to your service URL. The token remains in memory. [Dashboard setup and API details](dashboard/README.md) cover static builds, remote HTTPS connections, CORS and version conflicts.
 
 ## Create agent tokens
 
@@ -157,6 +174,14 @@ Update a skill after `get` returns its current version:
 ```json
 {"action":"upsert","ref":"fentaris/coordination","markdown":"# Updated instructions","expectedVersion":1}
 ```
+
+Change a skill's reference with `previousRef` and the source's current version:
+
+```json
+{"action":"upsert","previousRef":"fentaris/coordination","ref":"general/coordination","expectedVersion":1}
+```
+
+The move and any supplied metadata/content changes are atomic. The destination category and, for a subskill, parent must exist. Occupied references are rejected. Historical content and resources follow the new reference; a top-level skill's subskills move with it and advance their versions. Skills with subskills must retain a two-part reference. Old references stop resolving; existing audit entries retain the reference used at the time.
 
 Attach one resource through `resource_manage`:
 
