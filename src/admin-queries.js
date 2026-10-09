@@ -69,7 +69,7 @@ export class AdminQueries {
       const { rows } = await client.query(`SELECT id::text,agent_id AS "agentId",action AS operation,ref,version,created_at AS "createdAt"
         FROM sg_audit WHERE account_id=$1 AND ($2::text IS NULL OR agent_id=$2)
           AND ($3::text IS NULL OR action=$3) AND ($4::text IS NULL OR ref=$4)
-          AND ($5::bigint IS NULL OR id<$5) ORDER BY id DESC LIMIT $6`,
+          AND ($5::bigint IS NULL OR id<$5) ORDER BY sg_audit.id DESC LIMIT $6`,
       [this.principal.accountId, input.agent ?? null, input.operation ?? null, input.ref ?? null, before, input.limit + 1]);
       const truncated = rows.length > input.limit;
       const events = rows.slice(0, input.limit);

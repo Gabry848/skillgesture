@@ -98,8 +98,8 @@ test('audit uses descending keyset pages with stable filters and account-bound c
   for (const query of ['limit=51', 'limit=0', 'cursor=invalid', 'unexpected=x']) {
     assert.equal((await f.get(`activity?${query}`)).status, 400);
   }
-  await f.store.pool.query(`INSERT INTO sg_audit(account_id,agent_id,action,ref,version)
-    SELECT $1,'bulk-agent','skill.upsert','general/git',1 FROM generate_series(1,55)`, [f.token.accountId]);
+  await f.store.pool.query(`INSERT INTO sg_audit(id,account_id,agent_id,action,ref,version) OVERRIDING SYSTEM VALUE
+    SELECT 999980 + value,$1,'bulk-agent','skill.upsert','general/git',1 FROM generate_series(1,55) AS value`, [f.token.accountId]);
   const capped = await (await f.get('activity?agent=bulk-agent')).json();
   assert.equal(capped.events.length, 50);
   assert.equal(capped.truncated, true);
