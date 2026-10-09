@@ -9,7 +9,8 @@ param prefix string = 'skillgesture'
 @secure()
 param databasePassword string
 param databaseVersion string = '18'
-param githubRepository string = 'gabry848/skillgesture'
+@description('Exact GitHub OIDC subject for main, including immutable IDs when enabled.')
+param githubOidcSubject string
 @allowed(['Free', 'Standard'])
 param dashboardPlan string = 'Standard'
 
@@ -164,7 +165,7 @@ resource githubFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/fede
   properties: {
     issuer: 'https://token.actions.githubusercontent.com'
     audiences: ['api://AzureADTokenExchange']
-    subject: 'repo:${githubRepository}:ref:refs/heads/main'
+    subject: githubOidcSubject
   }
 }
 

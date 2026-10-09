@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { root, run, az, azureJson, deployTemplate, unwrap, assertSubscription, githubVariables } from './common.mjs';
+import { root, run, az, azureJson, deployTemplate, unwrap, assertSubscription, githubVariables, githubMainSubject } from './common.mjs';
 
 const { values } = parseArgs({ options: {
   subscription: { type: 'string' },
@@ -21,6 +21,8 @@ if (values.help) {
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(values.subscription ?? '')) throw new Error('--subscription must identify the intended Azure subscription');
 if (!/^rg-skillgesture(?:-[a-z0-9-]+)?$/.test(values['resource-group'])) throw new Error('Use a dedicated rg-skillgesture resource group');
 const group = values['resource-group'];
+const oidc = JSON.parse((await run('gh', ['api', `repos/${values['github-repository']}/actions/oidc/customization/sub`], { capture: true })).stdout);
+const githubOidcSubject = githubMainSubject(values['github-repository'], oidc);
 await az(['account', 'set', '--subscription', values.subscription]);
 assertSubscription(await azureJson(['account', 'show']), values.subscription);
 const groupResult = await az(['group', 'show', '--name', group, '--output', 'json'], { capture: true, optional: true });
@@ -56,10 +58,10 @@ if (!values['validate-only']) {
 }
 console.log(values['validate-only'] ? 'Validating the Azure foundation.' : 'Preparing the Azure foundation; application code remains unpublished.');
 const outputs = await deployTemplate('skillgesture-foundation', group, 'foundation.bicep', {
-  location: values.location, dashboardLocation: values['dashboard-location'], databasePassword: password, githubRepository: values['github-repository'],
+  location: values.location, dashboardLocation: values['dashboard-location'], databasePassword: password, githubOidcSubject,
 }, { validate: values['validate-only'] });
 if (!values['validate-only']) {
-  const state = { ...unwrap(outputs), resourceGroup: group, location: values.location, dashboardLocation: values['dashboard-location'], githubRepository: values['github-repository'], applicationDeployed: false };
+  const state = { ...unwrap(outputs), resourceGroup: group, location: values.location, dashboardLocation: values['dashboard-location'], githubRepository: values['github-repository'], githubOidcSubject, applicationDeployed: false };
   const owner = await azureJson(['ad', 'signed-in-user', 'show', '--query', 'id']);
   await deployTemplate('skillgesture-permissions', group, 'permissions.bicep', {
     registryName: state.registryName, vaultName: state.vaultName,
