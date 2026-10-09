@@ -20,7 +20,7 @@ async function fixture(t) {
 test('admin HTTP reads authenticate every request and isolate account identity, catalog and content', async (t) => {
   const f = await fixture(t);
   const other = await f.store.createToken({ agentId: 'other', admin: true });
-  for (const path of ['overview', 'activity', 'content?ref=general/git']) {
+  for (const path of ['overview', 'activity', 'content?ref=general/git', 'catalog']) {
     assert.equal((await f.get(path, null)).status, 401);
     assert.equal((await f.get(path, f.readerToken.token)).status, 403);
   }
@@ -30,11 +30,56 @@ test('admin HTTP reads authenticate every request and isolate account identity, 
   const foreign = await (await f.get('overview', other.token)).json();
   assert.equal(foreign.counts.skills.total, 0);
   assert.deepEqual((await (await f.get('activity', other.token)).json()).events, []);
+  assert.deepEqual((await (await f.get('catalog', other.token)).json()).items, []);
   assert.equal((await f.get('content?ref=general/git', other.token)).status, 404);
   await f.store.revokeToken(f.token.id);
   assert.equal((await f.get('overview')).status, 401);
   await f.store.pool.query("UPDATE sg_tokens SET expires_at=now()-interval '1 second' WHERE id=$1", [other.id]);
   assert.equal((await f.get('activity', other.token)).status, 401);
+});
+
+test('catalog returns exact filtered pages, category names and matching category skill counts', async (t) => {
+  const f = await fixture(t);
+  for (let i = 0; i < 25; i++) await f.admin.skillManage({ action: 'upsert', ref: `general/test-${String(i).padStart(2, '0')}`, name: `Test ${i}`, description: 'é'.repeat(1000) });
+  const first = await (await f.get('catalog?categoryId=general')).json();
+  assert.equal(first.total, 26); assert.equal(first.totalPages, 2); assert.equal(first.items.length, 20);
+  assert.ok(first.items.every((item) => item.categoryName === 'general' && item.state === 'active'));
+  const second = await (await f.get('catalog?categoryId=general&page=2')).json();
+  assert.equal(second.page, 2); assert.equal(second.items.length, 6);
+  assert.equal(new Set([...first.items, ...second.items].map((item) => item.ref)).size, 26);
+  const filtered = await (await f.get('catalog?query=test&categoryId=general')).json();
+  assert.equal(filtered.total, 25);
+  const categories = await (await f.get('catalog?kind=category')).json();
+  assert.equal(categories.items.find((item) => item.ref === 'general').skillCount, 26);
+  const empty = await (await f.get('catalog?query=missing&page=9')).json();
+  assert.equal(empty.total, 0); assert.equal(empty.totalPages, 1); assert.equal(empty.page, 1);
+  const last = await (await f.get('catalog?categoryId=general&page=99')).json();
+  assert.equal(last.page, 2);
+  for (const query of ['page=0', 'limit=51', 'kind=unknown', 'includeDisabled=yes', 'categoryId=../bad', 'unexpected=x', 'page=1&page=2']) {
+    assert.equal((await f.get(`catalog?${query}`)).status, 400);
+  }
+});
+
+test('catalog hides disabled and archived ancestors by default and includes them only when requested', async (t) => {
+  const f = await fixture(t);
+  await f.admin.skillManage({ action: 'upsert', ref: 'general/git/child', name: 'Child' });
+  await f.admin.skillManage({ action: 'upsert', ref: 'general/off', name: 'Off', enabled: false });
+  const list = async (query = '') => (await f.get(`catalog?categoryId=general${query}`)).json();
+  assert.equal((await list()).total, 2);
+  assert.equal((await list('&includeDisabled=true')).total, 3);
+  await f.admin.skillManage({ action: 'upsert', ref: 'general/git', enabled: false, expectedVersion: 1 });
+  assert.equal((await list()).total, 0);
+  const disabled = await list('&includeDisabled=true');
+  assert.ok(disabled.items.every((item) => item.state === 'disabled'));
+  await f.admin.skillManage({ action: 'delete', ref: 'general/git', expectedVersion: 2 });
+  const archived = await list('&includeDeleted=true');
+  assert.equal(archived.total, 2); assert.ok(archived.items.every((item) => item.state === 'archived'));
+  const categories = await (await f.get('catalog?kind=category')).json();
+  assert.equal(categories.items.find((item) => item.ref === 'general').skillCount, 0);
+  const all = await (await f.get('catalog?kind=category&includeDisabled=true&includeDeleted=true')).json();
+  assert.equal(all.items.find((item) => item.ref === 'general').skillCount, 3);
+  await f.admin.categoryManage({ action: 'upsert', id: 'general', enabled: false, expectedVersion: 1 });
+  assert.equal((await (await f.get('catalog?kind=category')).json()).items.some((item) => item.ref === 'general'), false);
 });
 
 test('overview partitions effective ancestor states and counts only current resources', async (t) => {

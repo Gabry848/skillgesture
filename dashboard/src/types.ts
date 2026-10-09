@@ -2,8 +2,10 @@ export interface Resource { path: string; mimeType: string; encoding: 'utf8' | '
 export interface Entity {
   ref: string; name?: string; description?: string; enabled?: boolean; default?: boolean;
   deleted?: boolean; version: number; resources?: Resource[];
+  state?: 'active' | 'disabled' | 'archived'; categoryName?: string; skillCount?: number;
 }
 export interface Page<T> { indexVersion?: string; truncated: boolean; nextCursor?: string; categories?: T[]; skills?: T[] }
+export interface CatalogPage { items: Entity[]; total: number; totalPages: number; page: number; limit: number }
 export interface Counts { active: number; disabled: number; archived: number; total: number }
 export interface Overview {
   identity: { accountId: string; agentId: string; admin: boolean };

@@ -45,7 +45,7 @@ export function createHttpServer({ store, publicUrl, tls, trustProxy = false,
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); return;
       }
       const path = req.url?.split('?')[0];
-      const adminRead = ['/api/admin/overview', '/api/admin/activity', '/api/admin/content'].includes(path);
+      const adminRead = ['/api/admin/overview', '/api/admin/activity', '/api/admin/content', '/api/admin/catalog'].includes(path);
       if (!adminRead && (!['/mcp', '/mcp/admin'].includes(path) || req.url !== path)) return reply(res, 404, 'NOT_FOUND');
       const expectedHost = url.port === '0' && LOOPBACK_HOSTS.has(url.hostname)
         ? `${url.hostname}:${server.address().port}` : url.host;
@@ -74,7 +74,8 @@ export function createHttpServer({ store, publicUrl, tls, trustProxy = false,
         if (req.method !== 'GET') return reply(res, 405, 'METHOD_NOT_ALLOWED', { Allow: 'GET' });
         const params = new URL(req.url, publicUrl).searchParams;
         const keys = path.endsWith('/overview') ? [] : path.endsWith('/activity')
-          ? ['agent', 'operation', 'ref', 'limit', 'cursor'] : ['ref', 'resourcePath'];
+          ? ['agent', 'operation', 'ref', 'limit', 'cursor'] : path.endsWith('/catalog')
+            ? ['kind', 'query', 'categoryId', 'page', 'limit', 'includeDeleted', 'includeDisabled'] : ['ref', 'resourcePath'];
         if ([...params.keys()].some((key) => !keys.includes(key) || params.getAll(key).length !== 1)) {
           return reply(res, 400, 'INVALID_INPUT');
         }

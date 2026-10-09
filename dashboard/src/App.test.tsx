@@ -19,6 +19,23 @@ function fixture() {
     async content(ref: string): Promise<Content> { return { ref, version: nodes.get(ref)!.version, markdown: bodies.get(ref)!, resources: nodes.get(ref)!.resources ?? [] }; },
     async resource(ref: string, path: string): Promise<ResourceContent> { return { ref, version: nodes.get(ref)!.version, resource: resources.get(`${ref}:${path}`)! }; },
     async activity() { return { events: [{ id: '1', agentId: 'admin', operation: 'skill.upsert', ref: 'general/git', version: 1, createdAt: overview.updatedAt }], truncated: false }; },
+    async catalog(params: Record<string, string | undefined>) {
+      calls.push({ name: 'catalog', args: params });
+      const state = (row: Entity, skill: boolean): Entity['state'] => {
+        const category = skill ? categories.get(row.ref.split('/')[0]) : undefined;
+        const parent = skill && row.ref.split('/').length === 3 ? nodes.get(row.ref.split('/').slice(0, 2).join('/')) : undefined;
+        return row.deleted || category?.deleted || parent?.deleted ? 'archived' : row.enabled === false || category?.enabled === false || parent?.enabled === false ? 'disabled' : 'active';
+      };
+      const available = (status: Entity['state']) => (params.includeDeleted === 'true' || status !== 'archived') && (params.includeDisabled === 'true' || status !== 'disabled');
+      const skills = [...nodes.values()].map((row) => ({ ...row, state: state(row, true), categoryName: categories.get(row.ref.split('/')[0])?.name })).filter((row) => available(row.state));
+      const items = (params.kind === 'category' ? [...categories.values()].map((row) => ({ ...row, state: state(row, false), skillCount: skills.filter((skill) => skill.ref.startsWith(`${row.ref}/`)).length })) : skills)
+        .filter((row) => available(row.state) && (!params.categoryId || row.ref.startsWith(`${params.categoryId}/`))
+          && (!params.query || `${row.ref} ${row.name} ${row.description}`.toLowerCase().includes(params.query.toLowerCase())));
+      const totalPages = Math.max(1, Math.ceil(items.length / Number(params.limit ?? 20)));
+      const page = Math.min(Number(params.page ?? 1), totalPages);
+      const limit = Number(params.limit ?? 20);
+      return { items: items.slice((page - 1) * limit, page * limit), total: items.length, totalPages, page, limit };
+    },
     async tool(name: string, args: Record<string, unknown>) {
       calls.push({ name, args });
       const map = name === 'category_manage' ? categories : nodes;
@@ -63,12 +80,166 @@ async function connect(f: ReturnType<typeof fixture>) {
 }
 async function openGit(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Catalog' }));
-  await user.click(await screen.findByRole('button', { name: 'Open general/git' }));
+  await user.click(await screen.findByRole('row', { name: 'Skill Git' }));
   await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Git'));
+}
+async function chooseCategory(user: ReturnType<typeof userEvent.setup>, name = 'General') {
+  await user.click(screen.getByRole('button', { name: 'Choose category' }));
+  await user.click(await screen.findByRole('option', { name }));
 }
 beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(window, 'confirm').mockReturnValue(true); });
 
 describe('dashboard workflows', () => {
+  it('shows category names, hides disabled skills by default and opens a skill from any cell', async () => {
+    const f = fixture(); f.nodes.set('general/hidden', { ref: 'general/hidden', name: 'Hidden', version: 1, enabled: false });
+    const user = await connect(f); await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    const row = await screen.findByRole('row', { name: 'Skill Git' });
+    expect(within(row).getByText('General')).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Reference' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: 'Skill Hidden' })).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('Show disabled'));
+    await screen.findByRole('row', { name: 'Skill Hidden' });
+    await user.click(within(screen.getByRole('row', { name: 'Skill Git' })).getByText('General'));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Git'));
+  });
+
+  it('opens category skills with the keyboard, edits a nested skill and archives with X using the current version', async () => {
+    const f = fixture(); f.nodes.set('general/extra', { ref: 'general/extra', name: 'Extra', enabled: true, version: 1 }); f.bodies.set('general/extra', '# Extra');
+    const user = await connect(f); await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('tab', { name: 'Categories' }));
+    const row = await screen.findByRole('row', { name: 'Category General' });
+    expect(within(row).getByText('2')).toBeInTheDocument();
+    row.focus(); await user.keyboard('{Enter}');
+    await screen.findByRole('button', { name: 'Edit Git' });
+    await user.click(screen.getByRole('button', { name: 'Edit Git' }));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Git'));
+    await user.type(screen.getByLabelText('Name'), ' updated');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await screen.findByRole('button', { name: 'Edit Git updated' });
+    await user.click(screen.getByRole('button', { name: 'Remove Extra from category' }));
+    await waitFor(() => expect(f.nodes.get('general/extra')?.deleted).toBe(true));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Edit Extra' })).not.toBeInTheDocument());
+    expect(f.calls.find((call) => call.args.action === 'delete' && call.args.ref === 'general/extra')?.args.expectedVersion).toBe(1);
+    expect(within(screen.getByRole('region', { name: 'Category skills' })).getByText('Page 1 of 1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(within(screen.getByRole('row', { name: 'Category General' })).getByText('1')).toBeInTheDocument());
+  });
+
+  it('creates a category from the searchable menu and keeps the new skill disabled', async () => {
+    const f = fixture(); const user = await connect(f);
+    await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    expect(screen.getByLabelText('Enabled')).not.toBeChecked();
+    await user.type(screen.getByRole('combobox', { name: 'Category' }), 'Design tools');
+    await user.click(await screen.findByRole('option', { name: 'New category “Design tools”' }));
+    await user.type(screen.getByLabelText('Name'), 'Sketch');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.categories.get('design-tools')).toMatchObject({ name: 'Design tools', default: false, enabled: true, version: 1 });
+    expect(f.nodes.get('design-tools/sketch')).toMatchObject({ name: 'Sketch', enabled: false, version: 1 });
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('row', { name: 'Skill Sketch' })).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('Show disabled'));
+    expect(within(await screen.findByRole('row', { name: 'Skill Sketch' })).getByText('Design tools')).toBeInTheDocument();
+  });
+
+  it('reuses a category created concurrently without overwriting its metadata', async () => {
+    const f = fixture(); const user = await connect(f);
+    await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    await user.type(screen.getByRole('combobox', { name: 'Category' }), 'Team');
+    await user.click(await screen.findByRole('option', { name: 'New category “Team”' }));
+    f.categories.set('team', { ref: 'team', name: 'Existing team', description: 'Preserved', version: 1 });
+    await user.type(screen.getByLabelText('Name'), 'Review');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.categories.get('team')).toMatchObject({ name: 'Existing team', description: 'Preserved', version: 1 });
+    expect(f.nodes.get('team/review')?.enabled).toBe(false);
+  });
+
+  it('keeps the existing reference when reviewing a new skill collision with a different display name', async () => {
+    const f = fixture(); f.nodes.get('general/git')!.name = 'Git toolbox';
+    const user = await connect(f); await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    await chooseCategory(user); await user.type(screen.getByLabelText('Name'), 'Git');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Your draft is safe.');
+    await user.click(screen.getByRole('button', { name: 'Load latest version' }));
+    await screen.findByText('Server version v1');
+    await user.click(screen.getByRole('button', { name: 'Replace draft with latest' }));
+    expect(screen.getByLabelText('Reference')).toHaveValue('general/git');
+    expect(screen.getByLabelText('Reference')).toHaveAttribute('readonly');
+    expect(screen.getByLabelText('Name')).toHaveValue('Git toolbox');
+    await user.type(screen.getByLabelText('Name'), ' updated');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.nodes.get('general/git')).toMatchObject({ name: 'Git toolbox updated', version: 2 });
+    expect(f.nodes.has('general/git-toolbox-updated')).toBe(false);
+    expect(f.calls.filter((call) => call.name === 'skill_manage' && call.args.action === 'upsert').at(-1)?.args)
+      .toMatchObject({ ref: 'general/git', expectedVersion: 1 });
+  });
+
+  it('keeps navigation and logout usable when the sidebar is collapsed', async () => {
+    const f = fixture(); const user = await connect(f);
+    expect(screen.getByRole('button', { name: 'Log out' }).closest('aside')).not.toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Close sidebar' }));
+    expect(screen.getByRole('button', { name: 'Open sidebar' })).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await screen.findByRole('row', { name: 'Skill Git' });
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }));
+    await user.click(screen.getByRole('button', { name: 'Log out' }));
+    await screen.findByLabelText('Admin token');
+    expect(screen.getByRole('button', { name: 'Catalog' })).toBeDisabled();
+  });
+
+  it('imports a skill file and creates it with only a reference entered manually', async () => {
+    const f = fixture(); const user = await connect(f);
+    await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    const markdown = '---\nname: Review\ndescription: Review proposed changes.\n---\n# Review\n\nRead the diff.\n';
+    const file = new File([markdown], 'SKILL.md', { type: 'text/markdown' });
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => new TextEncoder().encode(markdown).buffer });
+    await user.upload(screen.getByLabelText('Import skill file', { selector: 'input' }), file);
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Review'));
+    expect(screen.getByLabelText('Description')).toHaveValue('Review proposed changes.');
+    expect(screen.getByLabelText(/^Markdown/)).toHaveValue(markdown);
+    await chooseCategory(user);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.nodes.get('general/review')).toMatchObject({ name: 'Review', description: 'Review proposed changes.', version: 1, enabled: false });
+    expect(f.bodies.get('general/review')).toBe(markdown);
+    expect(f.calls.find((call) => call.args.ref === 'general/review' && call.args.action === 'upsert')?.args.expectedVersion).toBe(0);
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('preserves the reference and existing draft when an imported file is invalid or replacement is cancelled', async () => {
+    const f = fixture(); const user = await connect(f);
+    await user.click(screen.getByRole('button', { name: 'Catalog' }));
+    await user.click(await screen.findByRole('button', { name: 'New skill' }));
+    await chooseCategory(user);
+    const upload = screen.getByLabelText('Import skill file', { selector: 'input' });
+    const markdownFile = (content: string) => {
+      const file = new File([content], 'SKILL.md', { type: 'text/markdown' });
+      Object.defineProperty(file, 'arrayBuffer', { value: async () => new TextEncoder().encode(content).buffer });
+      return file;
+    };
+    await user.upload(upload, markdownFile('# Review'));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Review'));
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('General');
+    expect(window.confirm).not.toHaveBeenCalled();
+    await user.upload(upload, markdownFile('---\nname: [broken\n---\n'));
+    await screen.findByRole('alert');
+    expect(screen.getByLabelText('Name')).toHaveValue('Review');
+    expect(screen.getByLabelText(/^Markdown/)).toHaveValue('# Review');
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await user.upload(upload, markdownFile('# Different'));
+    expect(screen.getByLabelText('Name')).toHaveValue('Review');
+    expect(f.calls.some((call) => call.args.action === 'upsert')).toBe(false);
+  });
+
   it('connects, forgets credentials on logout and clears all loaded data on expiry', async () => {
     const f = fixture(); const user = await connect(f);
     await user.click(screen.getByRole('button', { name: 'Connection' }));
@@ -125,7 +296,9 @@ describe('dashboard workflows', () => {
     expect(f.bodies.get('general/git')).toContain('# Review');
     await user.click(screen.getByRole('button', { name: 'Close' }));
     await user.click(screen.getByRole('button', { name: 'New skill' }));
-    await user.type(screen.getByLabelText('Reference'), 'general/git/review');
+    await chooseCategory(user);
+    await user.click(screen.getByText('Skill identifier'));
+    await user.type(screen.getByLabelText('Skill ID'), 'git/review');
     await user.type(screen.getByLabelText('Name'), 'Review child');
     await user.type(screen.getByLabelText(/^Markdown/), '# Child');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -230,7 +403,7 @@ describe('dashboard workflows', () => {
   it('filters the catalog and opens read-only audit details', async () => {
     const f = fixture(); const user = await connect(f);
     await user.click(screen.getByRole('button', { name: 'Catalog' }));
-    await screen.findByRole('button', { name: 'Open general/git' });
+    await screen.findByRole('row', { name: 'Skill Git' });
     await user.type(screen.getByLabelText('Search catalog'), 'missing');
     await screen.findByText('No items found');
     await user.click(screen.getByRole('button', { name: 'Activity' }));
@@ -247,17 +420,17 @@ describe('dashboard workflows', () => {
     for (let i = 0; i < 22; i++) f.nodes.set(`general/skill-${i}`, { ref: `general/skill-${i}`, name: `Skill ${i}`, version: 1 });
     const user = await connect(f);
     await user.click(screen.getByRole('button', { name: 'Catalog' }));
-    await screen.findByRole('button', { name: 'Open general/git' });
+    await screen.findByRole('row', { name: 'Skill Git' });
     await screen.findByRole('option', { name: 'Category 54' });
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    await screen.findByText('Page 2');
-    await screen.findByRole('button', { name: 'Open general/skill-21' });
-    expect(screen.queryByRole('button', { name: 'Open general/git' })).not.toBeInTheDocument();
+    await screen.findByText('Page 2 of 2');
+    await screen.findByRole('row', { name: 'Skill Skill 21' });
+    expect(screen.queryByRole('row', { name: 'Skill Git' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Previous' }));
-    await screen.findByRole('button', { name: 'Open general/git' });
+    await screen.findByRole('row', { name: 'Skill Git' });
     await user.selectOptions(screen.getByLabelText('Filter category'), 'category-54');
     await screen.findByText('No items found');
-    expect(screen.getByText('Page 1')).toBeInTheDocument();
+    expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
     expect(f.calls.some((c) => c.name === 'category_manage' && c.args.cursor === 'page:50')).toBe(true);
   });
 });

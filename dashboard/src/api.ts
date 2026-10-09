@@ -1,5 +1,5 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Activity, Content, Overview, ResourceContent } from './types';
+import type { Activity, CatalogPage, Content, Overview, ResourceContent } from './types';
 
 const messages: Record<string, string> = {
   UNAUTHORIZED: 'Your credentials expired or were revoked. Connect again.',
@@ -108,6 +108,7 @@ export class DashboardApi {
     } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError('OPERATION_FAILED'); }
   }
   overview() { return this.get<Overview>('overview'); }
+  catalog(params: Record<string, string | undefined>) { return this.get<CatalogPage>('catalog', params); }
   activity(params: Record<string, string | undefined>) { return this.get<Activity>('activity', params); }
   content(ref: string) { return this.get<Content>('content', { ref }); }
   resource(ref: string, resourcePath: string) { return this.get<ResourceContent>('content', { ref, resourcePath }); }

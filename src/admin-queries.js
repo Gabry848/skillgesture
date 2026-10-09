@@ -1,6 +1,7 @@
 import * as z from 'zod/v4';
 import { CloudReadInput } from './cloud-contracts.js';
-import { indexVersion } from './registry.js';
+import { IdSchema } from './contracts.js';
+import { indexVersion, lexicalRank } from './registry.js';
 import { fail } from './errors.js';
 
 const ActivityInput = z.strictObject({
@@ -9,6 +10,15 @@ const ActivityInput = z.strictObject({
   ref: z.string().min(1).max(194).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(50),
   cursor: z.string().min(1).max(2048).optional(),
+});
+const CatalogInput = z.strictObject({
+  kind: z.enum(['skill', 'category']).default('skill'),
+  query: z.string().trim().min(1).max(200).optional(),
+  categoryId: IdSchema.optional(),
+  page: z.coerce.number().int().min(1).max(1000000).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  includeDeleted: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  includeDisabled: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
 });
 
 // Ancestor state determines availability. Counts partition the current catalog;
@@ -20,6 +30,50 @@ const NODE_STATE = `CASE WHEN c.deleted_at IS NOT NULL OR n.deleted_at IS NOT NU
 export class AdminQueries {
   constructor(store, principal) { this.store = store; this.principal = principal; }
   admin() { if (!this.principal.admin) fail('FORBIDDEN', 'Administrative access is required'); }
+
+  async catalog(raw) {
+    this.admin();
+    const input = CatalogInput.parse(raw);
+    return this.store.transaction(async (client) => {
+      const params = [this.principal.accountId, input.includeDeleted, input.includeDisabled];
+      let rows;
+      if (input.kind === 'category') {
+        ({ rows } = await client.query(`SELECT c.*,
+          CASE WHEN c.deleted_at IS NOT NULL THEN 'archived' WHEN NOT c.enabled THEN 'disabled' ELSE 'active' END AS state,
+          (SELECT count(*)::integer FROM sg_nodes n
+            LEFT JOIN sg_nodes p ON p.account_id=n.account_id AND p.ref=n.parent_ref
+            WHERE n.account_id=c.account_id AND n.category_id=c.id
+              AND ($2 OR (${NODE_STATE}) <> 'archived') AND ($3 OR (${NODE_STATE}) <> 'disabled')) AS "skillCount"
+          FROM sg_categories c WHERE c.account_id=$1 AND ($2 OR c.deleted_at IS NULL)
+            AND ($3 OR c.enabled) ORDER BY c.id`, params));
+        const terms = input.query?.toLowerCase().split(/\s+/) ?? [];
+        rows = rows.filter((row) => terms.every((term) => `${row.id} ${row.name} ${row.description}`.toLowerCase().includes(term)));
+      } else {
+        ({ rows } = await client.query(`SELECT * FROM (
+          SELECT n.*,c.name AS "categoryName",c.description AS category_description,${NODE_STATE} AS state
+          FROM sg_nodes n JOIN sg_categories c ON c.account_id=n.account_id AND c.id=n.category_id
+            LEFT JOIN sg_nodes p ON p.account_id=n.account_id AND p.ref=n.parent_ref
+          WHERE n.account_id=$1 AND ($4::text IS NULL OR n.category_id=$4)
+        ) catalog WHERE ($2 OR state <> 'archived') AND ($3 OR state <> 'disabled') ORDER BY ref`,
+        [...params, input.categoryId ?? null]));
+        const ranked = rows.map((row) => ({ row, rank: lexicalRank({ id: row.category_id, description: row.category_description },
+          { id: row.skill_id, name: row.name, description: row.description,
+            subskills: row.subskill_id ? [{ id: row.subskill_id, name: row.name, description: row.description }] : [] }, input.query) }))
+          .filter(({ rank }) => Number.isFinite(rank));
+        if (input.query) ranked.sort((a, b) => a.rank - b.rank || a.row.ref.localeCompare(b.row.ref));
+        rows = ranked.map(({ row }) => row);
+      }
+      const total = rows.length;
+      const totalPages = Math.max(1, Math.ceil(total / input.limit));
+      const currentPage = Math.min(input.page, totalPages);
+      const items = rows.slice((currentPage - 1) * input.limit, currentPage * input.limit).map((row) => ({
+        ref: row.ref ?? row.id, name: row.name, description: row.description, enabled: row.enabled,
+        version: row.version, state: row.state, ...(row.deleted_at ? { deleted: true } : {}),
+        ...(input.kind === 'category' ? { default: row.preload, skillCount: row.skillCount } : { categoryName: row.categoryName }),
+      }));
+      return { items, total, totalPages, page: currentPage, limit: input.limit };
+    }, { readOnly: true });
+  }
 
   async overview() {
     this.admin();
