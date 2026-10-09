@@ -1,0 +1,10 @@
+**
+!package.json
+!package-lock.json
+!src/
+!src/**
+!db/
+!db/**
+!deploy/
+!deploy/azure/
+!deploy/azure/bootstrap.mjs
