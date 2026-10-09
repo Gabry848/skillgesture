@@ -183,8 +183,9 @@ describe('dashboard workflows', () => {
     await user.click(screen.getByRole('button', { name: 'Load latest version' }));
     await screen.findByText('Server version v1');
     await user.click(screen.getByRole('button', { name: 'Replace draft with latest' }));
-    expect(screen.getByLabelText('Reference')).toHaveValue('general/git');
-    expect(screen.getByLabelText('Reference')).not.toHaveAttribute('readonly');
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('General');
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+    expect(screen.getByLabelText('Reference skill name')).not.toHaveAttribute('readonly');
     expect(screen.getByLabelText('Name')).toHaveValue('Git toolbox');
     await user.type(screen.getByLabelText('Name'), ' updated');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -202,8 +203,11 @@ describe('dashboard workflows', () => {
     const user = await connect(f); await openGit(user);
     const description = screen.getByRole('dialog', { name: 'Git' }).getAttribute('aria-describedby')!;
     expect(document.getElementById(description)).toHaveTextContent(/^General$/);
-    expect(screen.getByLabelText('Reference')).not.toHaveAttribute('readonly');
-    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'tools/version-control');
+    expect(screen.queryByLabelText('Reference')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('General');
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+    await chooseCategory(user, 'Development tools');
+    await user.clear(screen.getByLabelText('Reference skill name')); await user.type(screen.getByLabelText('Reference skill name'), 'version-control');
     expect(document.getElementById(description)).toHaveTextContent(/^Development tools$/);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByText('Changes saved.');
@@ -218,13 +222,13 @@ describe('dashboard workflows', () => {
 
   it('reviews the original skill after a reference-change conflict and retries the move with its current version', async () => {
     const f = fixture(); const user = await connect(f); await openGit(user);
-    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'general/new-git');
+    await user.clear(screen.getByLabelText('Reference skill name')); await user.type(screen.getByLabelText('Reference skill name'), 'new-git');
     f.nodes.get('general/git')!.version = 2; f.bodies.set('general/git', '# Remote edit');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByText('Your draft is safe.');
     await user.click(screen.getByRole('button', { name: 'Load latest version' }));
     await screen.findByText('Server version v2');
-    expect(screen.getByLabelText('Reference')).toHaveValue('general/new-git');
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('new-git');
     await user.click(screen.getByRole('button', { name: 'Keep draft on v2' }));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByText('Changes saved.');
@@ -237,7 +241,7 @@ describe('dashboard workflows', () => {
     f.nodes.get('general/git')!.resources = [{ path: 'guide.md', mimeType: 'text/markdown', encoding: 'utf8', size: 5 }];
     f.resources.set('general/git:guide.md', { content: 'Guide', mimeType: 'text/markdown', encoding: 'utf8', size: 5 });
     const user = await connect(f); await openGit(user);
-    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'general/unsaved');
+    await user.clear(screen.getByLabelText('Reference skill name')); await user.type(screen.getByLabelText('Reference skill name'), 'unsaved');
     await user.click(screen.getByRole('tab', { name: /Resources/ }));
     await user.click(screen.getByRole('button', { name: 'guide.md' }));
     await waitFor(() => expect(screen.getByLabelText('Text content')).toHaveValue('Guide'));
@@ -246,6 +250,41 @@ describe('dashboard workflows', () => {
     await screen.findByRole('button', { name: 'Restore' });
     expect(f.nodes.get('general/git')?.deleted).toBe(true);
     expect(f.nodes.has('general/unsaved')).toBe(false);
+    await user.click(screen.getByRole('tab', { name: 'Edit' }));
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+  });
+
+  it('creates a category while editing an existing skill and preserves its reference name', async () => {
+    const f = fixture(); const user = await connect(f); await openGit(user);
+    await user.clear(screen.getByRole('combobox', { name: 'Category' }));
+    await user.type(screen.getByRole('combobox', { name: 'Category' }), 'Version control');
+    await user.click(await screen.findByRole('option', { name: 'New category “Version control”' }));
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.categories.get('version-control')?.name).toBe('Version control');
+    expect(f.nodes.get('version-control/git')).toMatchObject({ name: 'Git', version: 2 });
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('Version control');
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+    expect(screen.queryByText('Version control will be created when you save.')).not.toBeInTheDocument();
+  });
+
+  it('restores both reference fields when replacing a conflicting draft with the current skill', async () => {
+    const f = fixture(); f.categories.set('tools', { ref: 'tools', name: 'Tools', version: 1 });
+    const user = await connect(f); await openGit(user); await chooseCategory(user, 'Tools');
+    await user.clear(screen.getByLabelText('Reference skill name')); await user.type(screen.getByLabelText('Reference skill name'), 'new-git');
+    f.nodes.get('general/git')!.version = 2;
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Your draft is safe.');
+    await user.click(screen.getByRole('button', { name: 'Load latest version' }));
+    await screen.findByText('Server version v2');
+    await user.click(screen.getByRole('button', { name: 'Replace draft with latest' }));
+    expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue('General');
+    expect(screen.getByLabelText('Reference skill name')).toHaveValue('git');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.nodes.get('general/git')?.version).toBe(3);
+    expect(f.nodes.has('tools/new-git')).toBe(false);
   });
 
   it('keeps navigation and logout usable when the sidebar is collapsed', async () => {
@@ -363,8 +402,7 @@ describe('dashboard workflows', () => {
     await user.click(screen.getByRole('button', { name: 'Close' }));
     await user.click(screen.getByRole('button', { name: 'New skill' }));
     await chooseCategory(user);
-    await user.click(screen.getByText('Skill identifier'));
-    await user.type(screen.getByLabelText('Skill ID'), 'git/review');
+    await user.type(screen.getByLabelText('Reference skill name'), 'git/review');
     await user.type(screen.getByLabelText('Name'), 'Review child');
     await user.type(screen.getByLabelText(/^Markdown/), '# Child');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));

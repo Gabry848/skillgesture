@@ -55,8 +55,15 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
   const [childDirty, setChildDirty] = useState(false);
   const [childrenRevision, setChildrenRevision] = useState(0);
   const childrenChanged = () => { setChildrenRevision((value) => value + 1); onChanged(); };
-  const mainDirty = editable(draft) !== editable(base) || creating && kind === 'skill' && (categoryEdited || customId !== initialRef.split('/').slice(1).join('/'));
+  const mainDirty = editable(draft) !== editable(base) || kind === 'skill' && (categoryEdited || creating && customId !== initialRef.split('/').slice(1).join('/'));
   const dirty = mainDirty || resourceDirty || childDirty;
+  const resetReference = (value: Draft) => {
+    const id = value.ref.split('/')[0];
+    const category = categories.find((item) => item.ref === id);
+    setCategoryChoice(category ? { id, name: entityName(category), archived: category.deleted }
+      : categoryChoice?.id === id ? { ...categoryChoice, isNew: false } : { id, name: id });
+    setCustomId(value.ref.split('/').slice(1).join('/')); setCategoryEdited(false);
+  };
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
   const read = useCallback(async (ref: string): Promise<Draft> => {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -72,7 +79,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
   useEffect(() => {
     if (isNew) return;
     let active = true;
-    read(initialRef).then((value) => { if (active) { setDraft(value); setBase(value); } })
+    read(initialRef).then((value) => { if (active) { setDraft(value); setBase(value); resetReference(value); } })
       .catch((e) => { if (active) setError(errorMessage(e)); }).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [initialRef, isNew, read]);
@@ -96,14 +103,17 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
   };
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setNotice('');
-    if (creating && kind === 'skill' && !categoryChoice) {
+    if (kind === 'skill' && !categoryChoice) {
       setError('Choose a category or select New category before saving.'); setBusy(false); return;
+    }
+    if (kind === 'skill' && !creating && !customId) {
+      setError('Enter the reference skill name before saving.'); setBusy(false); return;
     }
     if (kind === 'skill' && (new TextEncoder().encode(draft.markdown).length > MAX_MARKDOWN || draft.markdown.includes('\0'))) {
       setError('Markdown must be text no larger than 256 KiB.'); setBusy(false); return;
     }
     try {
-      if (creating && kind === 'skill' && categoryChoice?.isNew) {
+      if (kind === 'skill' && categoryChoice?.isNew) {
         try {
           await api.tool('category_manage', { action: 'upsert', id: categoryChoice.id, name: categoryChoice.name, enabled: true, default: false, expectedVersion: 0 });
         } catch (e) {
@@ -113,7 +123,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
         }
         setCategoryChoice({ ...categoryChoice, isNew: false }); onChanged();
       }
-      const ref = creating && kind === 'skill' ? newRef : draft.ref;
+      const ref = kind === 'skill' ? newRef : draft.ref;
       setDraft((value) => ({ ...value, ref }));
       const result = await api.tool<{ version: number }>(kind === 'category' ? 'category_manage' : 'skill_manage', {
         action: 'upsert', ...(kind === 'category' ? { id: ref, default: draft.default } : { ref, markdown: draft.markdown,
@@ -121,7 +131,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
         name: draft.name, description: draft.description, enabled: draft.enabled, expectedVersion: draft.version,
       });
       const saved = { ...draft, ref, version: result.version };
-      setDraft(saved); setBase(saved); setCreating(false); setNotice('Changes saved.'); onChanged();
+      setDraft(saved); setBase(saved); resetReference(saved); setCreating(false); setNotice('Changes saved.'); onChanged();
     } catch (e) { failure(e); } finally { setBusy(false); }
   };
   const lifecycle = async () => {
@@ -131,7 +141,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
     try {
       await api.tool(kind === 'category' ? 'category_manage' : 'skill_manage', { action: base.deleted ? 'restore' : 'delete',
         ...(kind === 'category' ? { id: base.ref } : { ref: base.ref }), expectedVersion: base.version });
-      const value = await read(base.ref); setDraft(value); setBase(value); setConflict(false); setLatest(undefined);
+      const value = await read(base.ref); setDraft(value); setBase(value); resetReference(value); setConflict(false); setLatest(undefined);
       setResourceEpoch((n) => n + 1); setResourceDirty(false); onChanged();
     } catch (e) { failure(e); } finally { setBusy(false); }
   };
@@ -143,6 +153,8 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
     if (!latest) return;
     if (!keepDraft && dirty && !window.confirm('Replace your draft with the current server version?')) return;
     setBase(latest); setDraft(keepDraft && mainDirty ? { ...draft, version: latest.version, deleted: latest.deleted, resources: latest.resources } : latest);
+    if (!keepDraft || !mainDirty) resetReference(latest);
+    else if (creating) resetReference(draft);
     setCreating(false);
     if (!keepDraft) { setResourceDirty(false); setResourceEpoch((n) => n + 1); }
     setConflict(false); setLatest(undefined); setError('');
@@ -152,7 +164,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
     try {
       const value = await read(base.ref);
       if (value.version !== version) throw new ApiError('VERSION_CONFLICT');
-      setDraft(value); setBase(value); setNotice('Resources updated.');
+      setDraft(value); setBase(value); resetReference(value); setNotice('Resources updated.');
     } catch (e) { failure(e); }
   };
   const navigateTab = (next: typeof tab) => {
@@ -176,10 +188,17 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
         {kind === 'skill' && creating && <div className="skill-upload"><Button type="button" variant="outline" onClick={() => upload.current?.click()}><Upload size={14} />Import skill file</Button>
           <input type="file" accept=".md,.markdown,text/markdown" ref={upload} className="sr-only" aria-label="Import skill file" disabled={busy} onChange={(e) => { void importFile(e.target.files?.[0]); e.target.value = ''; }} />
         </div>}
-        {kind === 'skill' && creating ? <><CategoryPicker categories={categories} value={categoryChoice} disabled={busy} onChange={(value) => { setCategoryChoice(value); setCategoryEdited(true); setNotice(''); }} />
+        {kind === 'skill' ? <><div className="skill-reference-fields"><CategoryPicker categories={categories} value={categoryChoice} disabled={busy || draft.deleted} onChange={(value) => {
+          setCategoryChoice(value); setCategoryEdited(true); setNotice('');
+          if (!creating && value) change('ref', `${value.id}/${customId}`);
+        }} />
+          <label>Reference skill name<Input value={customId} placeholder={catalogId(draft.name) || 'From skill name'} required={!creating} maxLength={129}
+            pattern="[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?" onChange={(e) => {
+              setCustomId(e.target.value); setNotice('');
+              if (!creating) change('ref', `${categoryChoice?.id ?? draft.ref.split('/')[0]}/${e.target.value}`);
+            }} /></label></div>
           {categoryChoice?.isNew && <p className="field-hint">{categoryChoice.name} will be created when you save.</p>}
-          <details className="skill-reference-options"><summary>Skill identifier</summary><label>Skill ID<Input value={customId} placeholder={catalogId(draft.name) || 'skill'} pattern="[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?" onChange={(e) => { setCustomId(e.target.value); setNotice(''); }} /></label>{newRef && <p className="field-hint mono">{newRef}</p>}</details>
-        </> : <label>{kind === 'category' ? 'Category ID' : 'Reference'}<Input value={draft.ref} onChange={(e) => change('ref', e.target.value)} required readOnly={kind === 'category' && !creating} pattern={kind === 'category' ? '[a-z0-9][a-z0-9-]{0,63}' : '[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?'} placeholder={kind === 'category' ? 'development' : 'development/code-review'} /></label>}
+        </> : <label>Category ID<Input value={draft.ref} onChange={(e) => change('ref', e.target.value)} required readOnly={!creating} pattern="[a-z0-9][a-z0-9-]{0,63}" placeholder="development" /></label>}
         <label>Name<Input value={draft.name} onChange={(e) => change('name', e.target.value)} required maxLength={120} /></label>
         <label>Description<Textarea value={draft.description} onChange={(e) => change('description', e.target.value)} maxLength={1000} rows={3} /></label>
         <div className="settings-row"><label className="checkbox-label"><input type="checkbox" checked={draft.enabled} onChange={(e) => change('enabled', e.target.checked)} />Enabled</label>{kind === 'category' && <label className="checkbox-label"><input type="checkbox" checked={draft.default} onChange={(e) => change('default', e.target.checked)} />Default category</label>}</div>

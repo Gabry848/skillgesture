@@ -228,9 +228,8 @@
 .category-picker-option[data-highlighted] { background: var(--accent); }
 .category-picker-option[data-disabled] { opacity: .45; cursor: default; }
 .category-picker-empty { padding: 16px 9px; color: var(--muted-foreground); font-size: 12px; }
-.skill-reference-options { font-size: 11px; color: var(--muted-foreground); }
-.skill-reference-options summary { cursor: pointer; }
-.skill-reference-options label, .skill-reference-options p { margin-top: 12px; }
+.skill-reference-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.skill-reference-fields > * { min-width: 0; }
 .category-skills-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .category-skills-heading h3 { display: flex; align-items: center; gap: 9px; }
 .category-skills-filters { display: flex; flex-direction: column; gap: 14px; margin: 18px 0; }
@@ -300,4 +299,5 @@
   .service-card, .overview-catalog { padding: 20px; } .service-meta { gap: 40px; } .page-footnote { font-size: 9px; line-height: 1.8; }
   .connection-card { padding: 24px 20px; } .connection-grid { grid-template-columns: minmax(0,1fr); } .table-toolbar { padding: 12px; } .activity-filters { align-items: stretch; flex-direction: column; } .activity-filters > svg { display: none; } .activity-filters input { max-width: none; }
   .editor-sheet { width: 100vw; } .editor-sheet [data-slot=sheet-header] { padding: 24px 18px 20px; } .editor-body { padding: 20px 18px 28px; } .archive-zone { flex-wrap: wrap; } .pagination { padding: 12px; }
+  .skill-reference-fields { grid-template-columns: minmax(0, 1fr); }
 }

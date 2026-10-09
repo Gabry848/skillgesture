@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Combobox } from '@base-ui/react/combobox';
 import { Check, ChevronDown, Plus } from 'lucide-react';
 import type { Entity } from '../types';
@@ -13,6 +13,7 @@ export function CategoryPicker({ categories, value, onChange, disabled }: {
 }) {
   const inputId = useId();
   const [input, setInput] = useState(value?.name ?? '');
+  useEffect(() => { if (value) setInput(value.name); }, [value?.id, value?.name, value?.isNew]);
   const text = input.trim();
   const id = catalogId(text);
   const searching = input !== value?.name;
