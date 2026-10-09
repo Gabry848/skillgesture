@@ -69,6 +69,19 @@ For local development only, `PUBLIC_URL=http://127.0.0.1:8080/mcp` with `ALLOW_I
 
 The MCP HTTP transport is request-local and returns JSON. Durable **agent sessions are stored in Postgres**, independent of transport connections and server restarts.
 
+## Dashboard
+
+Manage categories, skills, subskills and bundled resources in the separate dark Coss UI console. Inspect the catalog audit and current inactive content with an admin token.
+
+```sh
+npm run dashboard:install
+ALLOWED_ORIGINS=http://127.0.0.1:5173 ./start.sh
+# In a second terminal:
+npm run dashboard:dev
+```
+
+Open `http://127.0.0.1:5173` and connect to your service URL. The token remains in memory. [Dashboard setup and API details](dashboard/README.md) cover static builds, remote HTTPS connections, CORS and version conflicts.
+
 ## Create agent tokens
 
 The operator CLI uses database credentials and is not exposed through MCP:
