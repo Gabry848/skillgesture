@@ -42,7 +42,7 @@ jobs:
             dashboard/package-lock.json
       - run: npm ci
       - run: npm test
-      - run: node --test deploy/azure/bootstrap.test.mjs
+      - run: node --test deploy/azure/*.test.mjs
       - run: npm run dashboard:install
       - run: npm run dashboard:typecheck
       - run: npm run dashboard:test

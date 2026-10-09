@@ -52,6 +52,9 @@ Registry admin credentials are disabled. The backend identity can pull images an
 read vault secrets; the operator identity can also store newly generated agent
 tokens. CI uses GitHub OIDC scoped to this repository's `main` branch, with
 Contributor access only to the dedicated resource group and AcrPush on its registry.
+Preparation reads the repository's OIDC configuration so the Azure federation
+uses its exact subject, including immutable owner/repository IDs when enabled.
+It refuses custom subject templates that need a separate federation setup.
 It has no role-assignment permission. The signed-in operator receives secret access
 only on the dedicated vault.
 
@@ -63,7 +66,7 @@ All three Bicep templates can be compiled before accessing Azure:
 az bicep build --file deploy/azure/foundation.bicep
 az bicep build --file deploy/azure/permissions.bicep
 az bicep build --file deploy/azure/application.bicep
-node --test deploy/azure/bootstrap.test.mjs
+node --test deploy/azure/*.test.mjs
 ```
 
 For remote validation after creating the dedicated group, use

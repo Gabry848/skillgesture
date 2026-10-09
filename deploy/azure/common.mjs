@@ -34,6 +34,16 @@ export function unwrap(outputs) { return Object.fromEntries(Object.entries(outpu
 export function assertSubscription(actual, expected) {
   if (actual.id !== expected || actual.state !== 'Enabled') throw new Error('Select the intended enabled Azure subscription before continuing');
 }
+export function githubMainSubject(repository, configuration) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('Invalid GitHub repository');
+  if (configuration.use_default !== true) throw new Error('Custom GitHub OIDC subjects require an explicit federation setup');
+  const prefix = configuration.sub_claim_prefix ?? (configuration.use_immutable_subject ? undefined : `repo:${repository}`);
+  const [owner, name] = repository.split('/');
+  const plain = `repo:${repository}`;
+  const immutable = new RegExp(`^repo:${owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@[0-9]+/${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@[0-9]+$`);
+  if (prefix !== plain && (typeof prefix !== 'string' || !immutable.test(prefix))) throw new Error('GitHub OIDC prefix does not match the intended repository');
+  return `${prefix}:ref:refs/heads/main`;
+}
 export function githubVariables(state) {
   return {
     AZURE_CLIENT_ID: state.deployClientId,
