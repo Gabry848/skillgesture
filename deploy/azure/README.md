@@ -80,7 +80,8 @@ Merge the deployment files and the intended product changes into `main`. In
 GitHub Actions, run **Deploy SkillGesture to Azure** from `main` and supply the
 full 40-character SHA of the release commit. The workflow verifies membership in
 `main`, runs backend and dashboard tests, builds an amd64 Linux image, publishes
-it to ACR and deploys by immutable digest. It then publishes `dashboard/dist` and
+it to ACR and deploys by immutable digest. It then builds the dashboard with the
+deployed MCP URL as its initial connection address, publishes `dashboard/dist` and
 checks database readiness, required MCP authentication and the exact dashboard
 CORS origin. It uses the configuration values from the foundation; no frontend
 secret is embedded in the static build.

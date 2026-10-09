@@ -102,7 +102,12 @@ jobs:
             --vault "$AZURE_KEY_VAULT_NAME" \
             --commit "$RELEASE_SHA" --image "$RELEASE_IMAGE"
       - run: npm run dashboard:install
-      - run: npm run dashboard:build
+      - name: Build the dashboard with its production service URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VITE_SKILLGESTURE_URL="https://$(az resource show --resource-group "$AZURE_RESOURCE_GROUP" --resource-type Microsoft.App/containerApps --name skillgesture-api --query properties.configuration.ingress.fqdn --output tsv)/mcp"
+          npm run dashboard:build
       - name: Retrieve and mask the dashboard deployment credential
         id: dashboard-token
         shell: bash
