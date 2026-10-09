@@ -25,6 +25,28 @@ Register the runtime endpoint for agents that consume skills. Register the admin
 
 Requirements: Node.js 24+, npm, and Postgres. Install dependencies with `npm ci`.
 
+For a local development setup with Docker, run:
+
+```sh
+./start.sh
+```
+
+The launcher opens Docker Desktop on macOS if needed, creates or restarts
+`skillgesture-postgres`, waits for database readiness, installs missing Node
+dependencies, and starts the cloud MCP at `http://127.0.0.1:8080/mcp`. Both
+services bind to loopback. Postgres data persists in `skillgesture-postgres-data`.
+On macOS, the launcher generates a password and saves it in Keychain; it can also
+adopt the password of the container created by the manual setup. On other systems,
+supply `PGPASSWORD`. An existing container's mapped database port is reused;
+new containers use port 5433. HTTP uses port 8080.
+
+Leave the terminal open. `Ctrl+C` stops SkillGesture while Postgres remains
+available. To stop the database too, run `docker stop skillgesture-postgres`.
+Check readiness with `curl -f http://127.0.0.1:8080/health`.
+The launcher starts the service; agent token creation and catalog import remain
+the separate steps described below. It does not load `.env` or use production
+database/TLS settings. `./start.sh --help` shows the prerequisites.
+
 The default command starts the cloud server:
 
 ```sh
