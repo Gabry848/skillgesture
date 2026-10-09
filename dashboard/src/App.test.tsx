@@ -40,7 +40,8 @@ function fixture() {
       calls.push({ name, args });
       const map = name === 'category_manage' ? categories : nodes;
       const ref = (args.id ?? args.ref) as string;
-      const row = map.get(ref);
+      const previousRef = args.previousRef as string | undefined;
+      const row = map.get(previousRef ?? ref);
       if (args.action === 'list') {
         const values = [...map.values()].filter((r) => (args.includeDeleted || !r.deleted) && (!args.categoryId || r.ref.startsWith(`${args.categoryId}/`))
           && (!args.query || `${r.ref} ${r.name}`.toLowerCase().includes(String(args.query).toLowerCase())));
@@ -51,6 +52,18 @@ function fixture() {
       }
       if (args.action === 'get') return { [name === 'category_manage' ? 'category' : 'skill']: { ...row } };
       if (args.expectedVersion !== (row?.version ?? 0)) throw new ApiError('VERSION_CONFLICT', row?.version);
+      if (previousRef && previousRef !== ref) {
+        if (map.has(ref)) throw new ApiError('REF_ALREADY_EXISTS');
+        const moving = [...nodes.values()].filter((value) => value.ref === previousRef || value.ref.startsWith(`${previousRef}/`));
+        for (const value of moving) {
+          const target = ref + value.ref.slice(previousRef.length);
+          nodes.set(target, { ...value, ref: target, version: value.version + (value.ref === previousRef ? 0 : 1) });
+          nodes.delete(value.ref); bodies.set(target, bodies.get(value.ref)!); bodies.delete(value.ref);
+          for (const [key, resource] of [...resources]) if (key.startsWith(`${value.ref}:`)) {
+            resources.set(target + key.slice(value.ref.length), resource); resources.delete(key);
+          }
+        }
+      }
       const version = (row?.version ?? 0) + 1;
       if (name === 'resource_manage') {
         const path = args.path as string;
@@ -171,7 +184,7 @@ describe('dashboard workflows', () => {
     await screen.findByText('Server version v1');
     await user.click(screen.getByRole('button', { name: 'Replace draft with latest' }));
     expect(screen.getByLabelText('Reference')).toHaveValue('general/git');
-    expect(screen.getByLabelText('Reference')).toHaveAttribute('readonly');
+    expect(screen.getByLabelText('Reference')).not.toHaveAttribute('readonly');
     expect(screen.getByLabelText('Name')).toHaveValue('Git toolbox');
     await user.type(screen.getByLabelText('Name'), ' updated');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -180,6 +193,59 @@ describe('dashboard workflows', () => {
     expect(f.nodes.has('general/git-toolbox-updated')).toBe(false);
     expect(f.calls.filter((call) => call.name === 'skill_manage' && call.args.action === 'upsert').at(-1)?.args)
       .toMatchObject({ ref: 'general/git', expectedVersion: 1 });
+  });
+
+  it('shows only the category beneath the skill name and saves an editable reference without losing resources', async () => {
+    const f = fixture(); f.categories.set('tools', { ref: 'tools', name: 'Development tools', version: 1 });
+    f.nodes.get('general/git')!.resources = [{ path: 'guide.md', mimeType: 'text/markdown', encoding: 'utf8', size: 5 }];
+    f.resources.set('general/git:guide.md', { content: 'Guide', mimeType: 'text/markdown', encoding: 'utf8', size: 5 });
+    const user = await connect(f); await openGit(user);
+    const description = screen.getByRole('dialog', { name: 'Git' }).getAttribute('aria-describedby')!;
+    expect(document.getElementById(description)).toHaveTextContent(/^General$/);
+    expect(screen.getByLabelText('Reference')).not.toHaveAttribute('readonly');
+    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'tools/version-control');
+    expect(document.getElementById(description)).toHaveTextContent(/^Development tools$/);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.calls.find((call) => call.args.previousRef === 'general/git')?.args)
+      .toMatchObject({ action: 'upsert', ref: 'tools/version-control', previousRef: 'general/git', expectedVersion: 1 });
+    expect(f.nodes.has('general/git')).toBe(false);
+    expect(f.bodies.get('tools/version-control')).toBe('# Git\n');
+    await user.click(screen.getByRole('tab', { name: /Resources/ }));
+    await user.click(await screen.findByRole('button', { name: 'guide.md' }));
+    await waitFor(() => expect(screen.getByLabelText('Text content')).toHaveValue('Guide'));
+  });
+
+  it('reviews the original skill after a reference-change conflict and retries the move with its current version', async () => {
+    const f = fixture(); const user = await connect(f); await openGit(user);
+    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'general/new-git');
+    f.nodes.get('general/git')!.version = 2; f.bodies.set('general/git', '# Remote edit');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Your draft is safe.');
+    await user.click(screen.getByRole('button', { name: 'Load latest version' }));
+    await screen.findByText('Server version v2');
+    expect(screen.getByLabelText('Reference')).toHaveValue('general/new-git');
+    await user.click(screen.getByRole('button', { name: 'Keep draft on v2' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Changes saved.');
+    expect(f.nodes.get('general/new-git')?.version).toBe(3);
+    expect(f.calls.filter((call) => call.args.previousRef === 'general/git').at(-1)?.args.expectedVersion).toBe(2);
+  });
+
+  it('keeps resource reads and archive actions on the saved reference until a changed reference is saved', async () => {
+    const f = fixture();
+    f.nodes.get('general/git')!.resources = [{ path: 'guide.md', mimeType: 'text/markdown', encoding: 'utf8', size: 5 }];
+    f.resources.set('general/git:guide.md', { content: 'Guide', mimeType: 'text/markdown', encoding: 'utf8', size: 5 });
+    const user = await connect(f); await openGit(user);
+    await user.clear(screen.getByLabelText('Reference')); await user.type(screen.getByLabelText('Reference'), 'general/unsaved');
+    await user.click(screen.getByRole('tab', { name: /Resources/ }));
+    await user.click(screen.getByRole('button', { name: 'guide.md' }));
+    await waitFor(() => expect(screen.getByLabelText('Text content')).toHaveValue('Guide'));
+    expect(screen.getByRole('button', { name: 'Save resource' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+    await screen.findByRole('button', { name: 'Restore' });
+    expect(f.nodes.get('general/git')?.deleted).toBe(true);
+    expect(f.nodes.has('general/unsaved')).toBe(false);
   });
 
   it('keeps navigation and logout usable when the sidebar is collapsed', async () => {

@@ -102,6 +102,91 @@ test('concurrent catalog writes reject stale versions and retain immutable conte
   assert.equal(rows[0].markdown, '# Git\n');
 });
 
+test('changing a reference moves the skill, subskills, immutable versions and resources in one account revision', async () => {
+  const { store, admin, reader } = await cloudFixture();
+  await admin.resourceManage({ action: 'upsert', ref: 'general/git', path: 'binary.bin', content: 'AAEC/w==', encoding: 'base64', expectedVersion: 1 });
+  await admin.skillManage({ action: 'upsert', ref: 'general/git', markdown: '# Latest', expectedVersion: 2 });
+  await admin.skillManage({ action: 'upsert', ref: 'general/git/review', name: 'Review', markdown: '# Review' });
+  await admin.resourceManage({ action: 'upsert', ref: 'general/git/review', path: 'guide.md', content: 'Child guide', expectedVersion: 1 });
+  await admin.skillManage({ action: 'upsert', ref: 'general/git/archived', name: 'Archived', markdown: '# Archived', enabled: false });
+  await admin.skillManage({ action: 'delete', ref: 'general/git/archived', expectedVersion: 1 });
+  const accountId = admin.principal.accountId;
+  const initial = await reader.tree({ categoryIds: ['fentaris'] });
+  const { rows: before } = await store.pool.query('SELECT revision FROM sg_accounts WHERE id=$1', [accountId]);
+  const moved = await admin.skillManage({ action: 'upsert', previousRef: 'general/git', ref: 'fentaris/source-control',
+    name: 'Source control', markdown: '# Renamed', expectedVersion: 3 });
+  assert.deepEqual(moved, { version: 4 });
+  await assert.rejects(admin.skillManage({ action: 'get', ref: 'general/git' }), { code: 'SKILL_NOT_FOUND' });
+  assert.equal((await reader.read({ ref: 'fentaris/source-control', categoryIds: ['fentaris'] })).markdown, '# Renamed');
+  assert.equal((await reader.read({ ref: 'fentaris/source-control/review', categoryIds: ['fentaris'] })).markdown, '# Review');
+  assert.equal((await admin.skillManage({ action: 'get', ref: 'fentaris/source-control/review' })).skill.version, 3);
+  assert.deepEqual((await reader.read({ ref: 'fentaris/source-control', categoryIds: ['fentaris'], resourcePath: 'binary.bin' })).resource.content, 'AAEC/w==');
+  assert.equal((await reader.read({ ref: 'fentaris/source-control/review', categoryIds: ['fentaris'], resourcePath: 'guide.md' })).resource.content, 'Child guide');
+  const archived = (await admin.skillManage({ action: 'get', ref: 'fentaris/source-control/archived', includeDeleted: true })).skill;
+  assert.equal(archived.deleted, true); assert.equal(archived.enabled, false); assert.equal(archived.version, 3);
+  const { rows: history } = await store.pool.query('SELECT version,markdown FROM sg_versions WHERE account_id=$1 AND ref=$2 ORDER BY version',
+    [accountId, 'fentaris/source-control']);
+  assert.deepEqual(history, [{ version: 1, markdown: '# Git\n' }, { version: 2, markdown: '# Git\n' }, { version: 3, markdown: '# Latest' }, { version: 4, markdown: '# Renamed' }]);
+  const { rows: manifests } = await store.pool.query('SELECT version,path FROM sg_resources WHERE account_id=$1 AND ref=$2 ORDER BY version', [accountId, 'fentaris/source-control']);
+  assert.deepEqual(manifests.map((row) => row.version), [2, 3, 4]);
+  const { rows: after } = await store.pool.query('SELECT revision FROM sg_accounts WHERE id=$1', [accountId]);
+  assert.equal(BigInt(after[0].revision), BigInt(before[0].revision) + 1n);
+  assert.equal((await reader.tree({ categoryIds: ['fentaris'], knownIndexVersion: initial.indexVersion })).notModified, undefined);
+  const { rows: old } = await store.pool.query("SELECT ref FROM sg_nodes WHERE account_id=$1 AND (ref='general/git' OR parent_ref='general/git')", [accountId]);
+  assert.deepEqual(old, []);
+});
+
+test('reference changes reject collisions and invalid parents and roll back partial copies', async () => {
+  const { store, admin } = await cloudFixture();
+  const accountId = admin.principal.accountId;
+  await admin.skillManage({ action: 'upsert', ref: 'general/git/review', name: 'Review' });
+  const { rows: before } = await store.pool.query('SELECT revision FROM sg_accounts WHERE id=$1', [accountId]);
+  for (const [ref, code] of [['fentaris/coordination', 'REF_ALREADY_EXISTS'], ['missing/git', 'CATEGORY_NOT_FOUND'],
+    ['fentaris/missing/review', 'REF_HAS_SUBSKILLS'], ['general/git/review', 'REF_HAS_SUBSKILLS']]) {
+    await assert.rejects(admin.skillManage({ action: 'upsert', previousRef: 'general/git', ref, expectedVersion: 1 }), { code });
+  }
+  await assert.rejects(admin.skillManage({ action: 'get', ref: 'general/git', previousRef: 'general/git' }), { code: 'INVALID_INPUT' });
+  const newVersion = admin.newVersion;
+  admin.newVersion = async () => { throw new Error('Injected copy failure'); };
+  try {
+    await assert.rejects(admin.skillManage({ action: 'upsert', previousRef: 'general/git', ref: 'fentaris/new-git', expectedVersion: 1 }), /Injected copy failure/);
+  } finally { admin.newVersion = newVersion; }
+  assert.equal((await admin.skillManage({ action: 'get', ref: 'general/git' })).skill.version, 1);
+  assert.equal((await admin.skillManage({ action: 'get', ref: 'general/git/review' })).skill.version, 1);
+  await assert.rejects(admin.skillManage({ action: 'get', ref: 'fentaris/new-git' }), { code: 'SKILL_NOT_FOUND' });
+  const { rows: after } = await store.pool.query('SELECT revision FROM sg_accounts WHERE id=$1', [accountId]);
+  assert.deepEqual(after, before);
+});
+
+test('a subskill can change parent or become a top-level skill without moving its old parent', async () => {
+  const { admin, reader } = await cloudFixture();
+  await admin.skillManage({ action: 'upsert', ref: 'general/git/review', name: 'Review', markdown: '# Review' });
+  await assert.rejects(admin.skillManage({ action: 'upsert', previousRef: 'general/git/review', ref: 'fentaris/missing/review', expectedVersion: 1 }), { code: 'SKILL_NOT_FOUND' });
+  await admin.skillManage({ action: 'upsert', previousRef: 'general/git/review', ref: 'fentaris/coordination/review', expectedVersion: 1 });
+  assert.equal((await reader.read({ ref: 'fentaris/coordination/review', categoryIds: ['fentaris'] })).markdown, '# Review');
+  await admin.skillManage({ action: 'upsert', previousRef: 'fentaris/coordination/review', ref: 'general/review', expectedVersion: 2 });
+  assert.equal((await reader.read({ ref: 'general/review' })).markdown, '# Review');
+  assert.equal((await admin.skillManage({ action: 'get', ref: 'general/git' })).skill.version, 1);
+  assert.equal((await admin.skillManage({ action: 'get', ref: 'fentaris/coordination' })).skill.version, 1);
+  await assert.rejects(admin.skillManage({ action: 'upsert', previousRef: 'general/review', ref: 'general/review/child', expectedVersion: 3 }), { code: 'INVALID_INPUT' });
+});
+
+test('reference changes require admin ownership and a current version, including simultaneous moves', async () => {
+  const { store, admin, reader } = await cloudFixture();
+  const change = { action: 'upsert', previousRef: 'general/git', ref: 'general/renamed', expectedVersion: 1 };
+  await assert.rejects(reader.skillManage(change), { code: 'FORBIDDEN' });
+  const otherToken = await store.createToken({ agentId: 'other', admin: true });
+  const other = new CloudRegistry(store, await store.authenticate(otherToken.token));
+  await other.categoryManage({ action: 'upsert', id: 'general', name: 'Other general' });
+  await assert.rejects(other.skillManage(change), { code: 'SKILL_NOT_FOUND' });
+  await assert.rejects(admin.skillManage({ ...change, expectedVersion: 0 }), { code: 'VERSION_CONFLICT' });
+  const attempts = await Promise.allSettled([admin.skillManage(change), admin.skillManage({ ...change, ref: 'general/second' })]);
+  assert.equal(attempts.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(attempts.find((result) => result.status === 'rejected').reason.code, 'SKILL_NOT_FOUND');
+  const skills = (await admin.skillManage({ action: 'list', categoryId: 'general' })).skills;
+  assert.equal(skills.length, 1); assert.equal(skills[0].version, 2);
+});
+
 test('targeted resource writes preserve other resources and roll back failed mutations', async () => {
   const { store, admin, reader } = await cloudFixture();
   await admin.resourceManage({ action: 'upsert', ref: 'general/git', path: 'reference.txt', content: 'Reference', expectedVersion: 1 });

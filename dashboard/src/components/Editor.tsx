@@ -116,7 +116,8 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
       const ref = creating && kind === 'skill' ? newRef : draft.ref;
       setDraft((value) => ({ ...value, ref }));
       const result = await api.tool<{ version: number }>(kind === 'category' ? 'category_manage' : 'skill_manage', {
-        action: 'upsert', ...(kind === 'category' ? { id: ref, default: draft.default } : { ref, markdown: draft.markdown }),
+        action: 'upsert', ...(kind === 'category' ? { id: ref, default: draft.default } : { ref, markdown: draft.markdown,
+          ...(!creating && ref !== base.ref ? { previousRef: base.ref } : {}) }),
         name: draft.name, description: draft.description, enabled: draft.enabled, expectedVersion: draft.version,
       });
       const saved = { ...draft, ref, version: result.version };
@@ -125,18 +126,18 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
   };
   const lifecycle = async () => {
     if (dirty && !window.confirm('Discard unsaved changes before changing archive state?')) return;
-    if (!draft.deleted && !window.confirm(`Archive ${draft.ref}? This can be restored later.`)) return;
+    if (!base.deleted && !window.confirm(`Archive ${base.ref}? This can be restored later.`)) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      await api.tool(kind === 'category' ? 'category_manage' : 'skill_manage', { action: draft.deleted ? 'restore' : 'delete',
-        ...(kind === 'category' ? { id: draft.ref } : { ref: draft.ref }), expectedVersion: draft.version });
-      const value = await read(draft.ref); setDraft(value); setBase(value); setConflict(false); setLatest(undefined);
+      await api.tool(kind === 'category' ? 'category_manage' : 'skill_manage', { action: base.deleted ? 'restore' : 'delete',
+        ...(kind === 'category' ? { id: base.ref } : { ref: base.ref }), expectedVersion: base.version });
+      const value = await read(base.ref); setDraft(value); setBase(value); setConflict(false); setLatest(undefined);
       setResourceEpoch((n) => n + 1); setResourceDirty(false); onChanged();
     } catch (e) { failure(e); } finally { setBusy(false); }
   };
   const loadLatest = async () => {
     setBusy(true);
-    try { setLatest(await read(draft.ref)); } catch (e) { failure(e); } finally { setBusy(false); }
+    try { setLatest(await read(creating ? draft.ref : base.ref)); } catch (e) { failure(e); } finally { setBusy(false); }
   };
   const adopt = (keepDraft: boolean) => {
     if (!latest) return;
@@ -149,7 +150,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
   const resourcesChanged = async (version: number) => {
     onChanged();
     try {
-      const value = await read(draft.ref);
+      const value = await read(base.ref);
       if (value.version !== version) throw new ApiError('VERSION_CONFLICT');
       setDraft(value); setBase(value); setNotice('Resources updated.');
     } catch (e) { failure(e); }
@@ -158,8 +159,10 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
     if (next !== 'resources' && resourceDirty) return;
     setTab(next);
   };
+  const categoryId = draft.ref.split('/')[0];
+  const category = categories.find((value) => value.ref === categoryId);
   return <Sheet open onOpenChange={(open) => { if (!open) close(); }}><SheetContent className="editor-sheet">
-    <SheetHeader><SheetTitle>{creating ? `New ${kind}` : draft.name || initialRef}</SheetTitle>{!creating && <SheetDescription>{draft.ref}</SheetDescription>}</SheetHeader>
+    <SheetHeader><SheetTitle>{creating ? `New ${kind}` : draft.name || (kind === 'skill' ? 'Skill' : 'Category')}</SheetTitle>{!creating && <SheetDescription>{kind === 'skill' ? category ? entityName(category) : categoryId : draft.ref}</SheetDescription>}</SheetHeader>
     <div className="editor-body">
       {!creating && <div className="editor-status"><Status entity={draft} /><Badge variant="outline">v{draft.version}</Badge>{dirty && <span className="muted">Unsaved changes</span>}</div>}
       <ErrorNotice>{error}</ErrorNotice>{notice && <div role="status" className="success-notice"><Check size={14} />{notice}</div>}
@@ -176,7 +179,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
         {kind === 'skill' && creating ? <><CategoryPicker categories={categories} value={categoryChoice} disabled={busy} onChange={(value) => { setCategoryChoice(value); setCategoryEdited(true); setNotice(''); }} />
           {categoryChoice?.isNew && <p className="field-hint">{categoryChoice.name} will be created when you save.</p>}
           <details className="skill-reference-options"><summary>Skill identifier</summary><label>Skill ID<Input value={customId} placeholder={catalogId(draft.name) || 'skill'} pattern="[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?" onChange={(e) => { setCustomId(e.target.value); setNotice(''); }} /></label>{newRef && <p className="field-hint mono">{newRef}</p>}</details>
-        </> : <label>{kind === 'category' ? 'Category ID' : 'Reference'}<Input value={draft.ref} onChange={(e) => change('ref', e.target.value)} required readOnly={!creating} pattern={kind === 'category' ? '[a-z0-9][a-z0-9-]{0,63}' : '[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?'} placeholder={kind === 'category' ? 'development' : 'development/code-review'} /></label>}
+        </> : <label>{kind === 'category' ? 'Category ID' : 'Reference'}<Input value={draft.ref} onChange={(e) => change('ref', e.target.value)} required readOnly={kind === 'category' && !creating} pattern={kind === 'category' ? '[a-z0-9][a-z0-9-]{0,63}' : '[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,63}(/[a-z0-9][a-z0-9-]{0,63})?'} placeholder={kind === 'category' ? 'development' : 'development/code-review'} /></label>}
         <label>Name<Input value={draft.name} onChange={(e) => change('name', e.target.value)} required maxLength={120} /></label>
         <label>Description<Textarea value={draft.description} onChange={(e) => change('description', e.target.value)} maxLength={1000} rows={3} /></label>
         <div className="settings-row"><label className="checkbox-label"><input type="checkbox" checked={draft.enabled} onChange={(e) => change('enabled', e.target.checked)} />Enabled</label>{kind === 'category' && <label className="checkbox-label"><input type="checkbox" checked={draft.default} onChange={(e) => change('default', e.target.checked)} />Default category</label>}</div>
@@ -184,7 +187,7 @@ export function Editor({ api, kind, initialRef, isNew, onClose, onChanged, onDir
         </fieldset><Button type="submit" disabled={busy || draft.deleted || conflict || resourceDirty}><Save size={14} />{busy ? 'Working…' : 'Save changes'}</Button>
       </form>}
       {tab === 'preview' && <div className="markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span className="muted">[Image: {alt ?? 'image'}]</span>, a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{draft.markdown || '*No Markdown yet.*'}</ReactMarkdown></div>}
-      {tab === 'resources' && !creating && <Resources key={resourceEpoch} api={api} entity={draft} mainDirty={mainDirty} blocked={draft.deleted || conflict || busy} onDirty={setResourceDirty} onChanged={resourcesChanged} onConflict={failure} />}
+      {tab === 'resources' && !creating && <Resources key={resourceEpoch} api={api} entity={{ ...draft, ref: base.ref }} mainDirty={mainDirty} blocked={draft.deleted || conflict || busy} onDirty={setResourceDirty} onChanged={resourcesChanged} onConflict={failure} />}
       {!creating && (kind === 'skill' || tab === 'edit') && <div className="archive-zone"><div><strong>{draft.deleted ? 'Restore this item' : 'Archive this item'}</strong><p>{draft.deleted ? 'Make it available to the catalog again.' : 'Remove it from agent discovery. Restore it at any time.'}</p></div><Button variant="outline" size="sm" disabled={busy || conflict} onClick={() => void lifecycle()}>{draft.deleted ? 'Restore' : 'Archive'}</Button></div>}
     </div>
     {selectedSkill && <Editor key={selectedSkill} api={api} kind="skill" initialRef={selectedSkill} isNew={false} categories={categories} onClose={() => { setSelectedSkill(undefined); setChildDirty(false); }} onChanged={childrenChanged} onDirty={setChildDirty} />}

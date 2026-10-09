@@ -175,6 +175,14 @@ Update a skill after `get` returns its current version:
 {"action":"upsert","ref":"fentaris/coordination","markdown":"# Updated instructions","expectedVersion":1}
 ```
 
+Change a skill's reference with `previousRef` and the source's current version:
+
+```json
+{"action":"upsert","previousRef":"fentaris/coordination","ref":"general/coordination","expectedVersion":1}
+```
+
+The move and any supplied metadata/content changes are atomic. The destination category and, for a subskill, parent must exist. Occupied references are rejected. Historical content and resources follow the new reference; a top-level skill's subskills move with it and advance their versions. Skills with subskills must retain a two-part reference. Old references stop resolving; existing audit entries retain the reference used at the time.
+
 Attach one resource through `resource_manage`:
 
 ```json

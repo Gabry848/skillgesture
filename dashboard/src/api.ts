@@ -10,6 +10,8 @@ const messages: Record<string, string> = {
   NODE_DELETED: 'Restore this item before editing it.',
   CATEGORY_NOT_FOUND: 'The category is unavailable. Restore it before editing its skills.',
   SKILL_NOT_FOUND: 'The skill or its parent is unavailable.',
+  REF_ALREADY_EXISTS: 'This reference is already used. Choose another reference.',
+  REF_HAS_SUBSKILLS: 'A skill with subskills needs a category/skill reference.',
   RESOURCE_NOT_FOUND: 'This resource is no longer available.',
   INVALID_ORIGIN: 'Allow this dashboard origin in the server ALLOWED_ORIGINS setting.',
   CONNECTION_FAILED: 'Unable to reach the service. Check the address, HTTPS and allowed origins.',

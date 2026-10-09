@@ -302,6 +302,7 @@ export class CloudRegistry {
   async skillManage(raw) {
     this.admin();
     const input = SkillManageInput.parse(raw);
+    if (input.previousRef !== undefined && input.action !== 'upsert') fail('INVALID_INPUT', 'Only upsert accepts previousRef');
     if (input.action !== 'upsert' && ['name', 'description', 'enabled', 'markdown'].some((key) => input[key] !== undefined)) {
       fail('INVALID_INPUT', 'Only upsert accepts skill fields');
     }
@@ -340,9 +341,11 @@ export class CloudRegistry {
         [this.principal.accountId, categoryId]);
       if (!categories.length) fail('CATEGORY_NOT_FOUND', 'Category does not exist');
       const parentRef = subskillId ? `${categoryId}/${skillId}` : null;
+      const moved = input.previousRef && input.previousRef !== input.ref
+        ? await this.moveSkill(client, input.previousRef, input.ref, input.expectedVersion) : undefined;
       if (parentRef) await this.node(client, parentRef);
       const { rows } = await client.query('SELECT * FROM sg_nodes WHERE account_id=$1 AND ref=$2', [this.principal.accountId, input.ref]);
-      const previous = rows[0];
+      const previous = moved ?? rows[0];
       if (input.action !== 'upsert' && !previous) fail('SKILL_NOT_FOUND', 'Skill does not exist');
       if (input.action === 'upsert' && previous?.deleted_at) fail('NODE_DELETED', 'Restore this skill before editing');
       checkVersion(previous, input.expectedVersion);
@@ -361,6 +364,49 @@ export class CloudRegistry {
       await this.newVersion(client, input.ref, previous?.version, version, input.markdown ?? (previous ? undefined : `# ${input.name}\n`));
       return { version };
     }, input.ref);
+  }
+
+  async moveSkill(client, previousRef, ref, expectedVersion) {
+    const accountId = this.principal.accountId;
+    const previous = await this.node(client, previousRef, { includeDeleted: true });
+    if (previous.deleted_at) fail('NODE_DELETED', 'Restore this skill before editing');
+    checkVersion(previous, expectedVersion);
+    const { rows: sourceCategories } = await client.query('SELECT id FROM sg_categories WHERE account_id=$1 AND id=$2 AND deleted_at IS NULL',
+      [accountId, previous.category_id]);
+    if (!sourceCategories.length) fail('CATEGORY_NOT_FOUND', 'Restore the source category before moving its skills');
+    if (previous.parent_ref) await this.node(client, previous.parent_ref);
+    const { rows: children } = await client.query('SELECT * FROM sg_nodes WHERE account_id=$1 AND parent_ref=$2 ORDER BY ref', [accountId, previousRef]);
+    const [categoryId, skillId, subskillId] = ref.split('/');
+    if (subskillId && children.length) fail('REF_HAS_SUBSKILLS', 'A skill with subskills needs a two-part reference');
+    const parentRef = subskillId ? `${categoryId}/${skillId}` : null;
+    if (parentRef === previousRef) fail('INVALID_INPUT', 'A skill cannot become its own subskill');
+    if (parentRef) await this.node(client, parentRef);
+    const moving = [previous, ...children].map((row) => ({ row, ref: row.ref === previousRef ? ref : `${ref}/${row.subskill_id}` }));
+    const { rows: occupied } = await client.query('SELECT ref FROM sg_nodes WHERE account_id=$1 AND ref=ANY($2::text[])',
+      [accountId, moving.map((item) => item.ref)]);
+    if (occupied.length) fail('REF_ALREADY_EXISTS', 'The destination reference already exists');
+    // Copy first to satisfy immediate foreign keys without a database migration.
+    // All historical versions and resource manifests follow the same identity.
+    for (const item of moving) {
+      const [targetCategory, targetSkill, targetSubskill] = item.ref.split('/');
+      await client.query(`INSERT INTO sg_nodes(account_id,ref,category_id,skill_id,subskill_id,parent_ref,name,description,enabled,version,deleted_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [accountId, item.ref, targetCategory, targetSkill, targetSubskill ?? null, targetSubskill ? `${targetCategory}/${targetSkill}` : null,
+        item.row.name, item.row.description, item.row.enabled, item.row.version, item.row.deleted_at]);
+      await client.query(`INSERT INTO sg_versions(account_id,ref,version,markdown)
+        SELECT account_id,$3,version,markdown FROM sg_versions WHERE account_id=$1 AND ref=$2`, [accountId, item.row.ref, item.ref]);
+      await client.query(`INSERT INTO sg_resources(account_id,ref,version,path,mime_type,encoding,size,blob_hash)
+        SELECT account_id,$3,version,path,mime_type,encoding,size,blob_hash FROM sg_resources WHERE account_id=$1 AND ref=$2`, [accountId, item.row.ref, item.ref]);
+      if (item.row.ref !== previousRef) {
+        await this.newVersion(client, item.ref, item.row.version, item.row.version + 1);
+        await client.query('UPDATE sg_nodes SET version=version+1 WHERE account_id=$1 AND ref=$2', [accountId, item.ref]);
+      }
+    }
+    const oldRefs = moving.map((item) => item.row.ref);
+    await client.query('DELETE FROM sg_resources WHERE account_id=$1 AND ref=ANY($2::text[])', [accountId, oldRefs]);
+    await client.query('DELETE FROM sg_versions WHERE account_id=$1 AND ref=ANY($2::text[])', [accountId, oldRefs]);
+    for (const oldRef of oldRefs.reverse()) await client.query('DELETE FROM sg_nodes WHERE account_id=$1 AND ref=$2', [accountId, oldRef]);
+    return { ...previous, ref, category_id: categoryId, skill_id: skillId, subskill_id: subskillId ?? null, parent_ref: parentRef };
   }
 
   async newVersion(client, ref, previousVersion, version, markdown, skipResourcePath) {
